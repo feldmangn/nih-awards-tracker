@@ -35,20 +35,63 @@
   </header>
 
   <main class="grid">
+    <!-- Top recipients -->
     <section>
-      <h2>Top recipients (by obligated amount)</h2>
-      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
         <div>
           <button id="tab-all" class="tab-btn active">All recipients</button>
           <button id="tab-sb" class="tab-btn">Small business / 8(a)</button>
         </div>
-
-        <label for="topN">Show top N:</label>
-        <input id="topN" type="number" min="5" max="100" value="25" step="5" />
+        <label>Show top N:
+          <input id="topN" type="number" min="5" max="100" value="25" step="5" />
+        </label>
       </div>
-      <div id="chart" style="width:100%;height:600px;"></div>
+
+      <h2 id="chartTitle">Top recipients (by obligated amount)</h2>
+      <div id="chart" style="width:100%;height:620px;"></div>
     </section>
 
+    <!-- Geography / Map -->
+    <section>
+      <h2>Geography (place of performance)</h2>
+
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <label>PSC starts with:</label>
+          <input id="pscFilter" placeholder="e.g. R (prof svcs) or 66 (lab instruments)" />
+          <p class="muted" style="margin:.25rem 0 0">
+            Examples: <code>R</code> = Professional/Admin/Mgmt Support; <code>66</code> = Instruments & Lab Eq.
+          </p>
+        </div>
+        <div>
+          <label>NAICS starts with:</label>
+          <input id="naicsFilter" placeholder="e.g. 541 (prof/tech), 5415 (IT)" />
+        </div>
+        <div>
+          <label>Aggregate by:</label>
+          <select id="aggMetric">
+            <option value="amount">Total obligated amount</option>
+            <option value="count">Award count</option>
+          </select>
+        </div>
+        <button id="applyFilters">Apply</button>
+        <button id="clearSelection" class="secondary">Clear selection</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);gap:1rem;margin-top:1rem;">
+        <div>
+          <div id="map" style="width:100%;height:620px;"></div>
+          <div id="mapNote" class="muted"></div>
+        </div>
+        <aside style="border:1px solid #ddd;border-radius:.5rem;padding:1rem;max-height:620px;overflow:auto">
+          <h3 id="stateTitle" style="margin-top:0">Click a state</h3>
+          <div id="stateSummary" class="muted"></div>
+          <ol id="stateList" style="margin:.5rem 0 0;padding-left:1.25rem;"></ol>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Raw awards table -->
     <section>
       <h2>Recent awards (raw)</h2>
       <div id="summary" class="muted"></div>
@@ -63,9 +106,20 @@
 
   <footer class="muted">
     Data: USAspending “Spending by Award” (NIH, contracts A–D). Built with GitHub Pages.
+    <span id="updated"></span>
   </footer>
 
-  <!-- JS for rendering -->
+  <!-- Optional debug output -->
+  <div id="debug" class="muted" style="margin:1rem 0;"></div>
+
+  <script>
+    // Show the last update timestamp if present (written by your workflow)
+    fetch("./last_update.txt").then(r=>r.text()).then(t=>{
+      document.getElementById("updated").textContent = " · Updated: " + t;
+    }).catch(()=>{});
+  </script>
+
+  <!-- App code -->
   <script type="module" src="./web/app.js"></script>
 </body>
 </html>
