@@ -7,26 +7,35 @@ PAGE_LIMIT = 100                        # USAspending max per page
 
 # Try a richer set first (includes Set-Aside info if available),
 # then fall back to a smaller set if the API rejects something.
+# Try richer sets first; fall back if USAspending rejects a field
+# … keep your imports/consts …
+
 FIELD_SETS = [
     [
         "Award ID",
         "Recipient Name",
         "Action Date",
         "Award Amount",
-        "Type of Set Aside",
-        "Description",
         "PIID",
-        "Awarding Agency",
-        "Awarding Sub Agency"
+        # + geography (for the map)
+        "Place of Performance State Code",
+        "Place of Performance City Code",
+        "Place of Performance Zip5",
+        # + classification codes
+        "Product or Service Code (PSC)",
+        "PSC Description",
+        "NAICS Code",
+        "NAICS Description",
+        # set-aside / size (helps your SB tab)
+        "Type of Set Aside",
+        "Contracting Officer Business Size Determination",
     ],
     [
-        "Award ID",
-        "Recipient Name",
-        "Action Date",
-        "Award Amount",
-        "PIID"
-    ]
+        "Award ID", "Recipient Name", "Action Date", "Award Amount", "PIID"
+    ],
 ]
+
+
 
 def fetch_page(payload):
     r = requests.post(API, json=payload, timeout=60)
