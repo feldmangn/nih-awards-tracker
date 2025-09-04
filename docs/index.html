@@ -13,13 +13,10 @@
     table { font-size: 0.9rem; }
     th, td { white-space: nowrap; }
     .muted { opacity: 0.7; font-size: 0.9rem; }
+    .tab{padding:.5rem .75rem;border:1px solid #ccc;border-radius:.5rem;background:#fff;cursor:pointer}
+    .tab.active{background:#111;color:#fff;border-color:#111}
   </style>
 </head>
-
-<div id="debug" class="muted" style="margin:1rem 0;"></div>
-<script type="module" src="./web/app.js"></script>
-
-
 <body>
   <header>
     <h1>NIH Contract Awards Tracker</h1>
@@ -28,10 +25,18 @@
 
   <main class="grid">
     <section>
-      <h2>Top recipients (by obligated amount)</h2>
-      <label for="topN">Show top N:</label>
-      <input id="topN" type="number" min="5" max="100" value="25" step="5" />
-      <div id="chart" style="width:100%;height:600px;"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
+        <div>
+          <button id="tabAll" class="tab active">All recipients</button>
+          <button id="tabSB"  class="tab">Small business / 8(a)</button>
+        </div>
+        <label>Show top N:
+          <input id="topN" type="number" min="5" max="100" value="25" step="5" />
+        </label>
+      </div>
+
+      <h2 id="chartTitle">Top recipients (by obligated amount)</h2>
+      <div id="chart" style="width:100%;height:620px;"></div>
     </section>
 
     <section>
@@ -48,8 +53,18 @@
 
   <footer class="muted">
     Data: USAspending “Spending by Award” (NIH, contracts A–D). Built with GitHub Pages.
+    <span id="updated"></span>
   </footer>
 
+  <!-- debug area (optional) -->
+  <div id="debug" class="muted" style="margin:1rem 0;"></div>
+
+  <script>
+    // show the last_update.txt if present
+    fetch("./last_update.txt").then(r=>r.text()).then(t=>{
+      document.getElementById("updated").textContent = " · Updated: " + t;
+    }).catch(()=>{});
+  </script>
   <script type="module" src="./web/app.js"></script>
 </body>
 </html>
