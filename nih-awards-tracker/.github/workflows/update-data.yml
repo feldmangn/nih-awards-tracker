@@ -31,10 +31,20 @@ jobs:
       - name: Publish data for GitHub Pages
         run: |
           mkdir -p docs/data
+          echo "Listing inner data dir before copy:"
+          ls -lh nih-awards-tracker/data || true
+
+          # copy everything, including the enriched CSV
           cp -f nih-awards-tracker/data/*.csv docs/data/ || true
           cp -f nih-awards-tracker/data/*.json docs/data/ || true
+
+          # timestamp for footer
           date -u +"%Y-%m-%d %H:%M UTC" > docs/last_update.txt
           touch docs/.nojekyll
+
+          echo "Listing docs/data after copy:"
+          ls -lh docs/data
+
 
       - name: Update README 'Last Updated' badge text
         run: |
