@@ -13,27 +13,30 @@ async function loadCSV(url) {
 }
 
 async function loadRecipientsOrFallback() {
-  try { return await loadCSV(TOP_RECIP_ENRICH); }           // prefer enriched
-  catch { try { return await loadCSV(TOP_RECIP); }          // fallback to plain
-         catch { return null; } }                           // final fallback computed below
+  try { return await loadCSV(TOP_RECIP_ENRICH); }      // prefer enriched
+  catch { try { return await loadCSV(TOP_RECIP); }     // fallback to plain
+         catch { return null; } }                      // will compute from awards
 }
 
 async function render() {
-  const [recipsRawMaybe, awardsRaw] = await Promise.all([loadRecipientsOrFallback(), loadCSV(AWARDS)]);
+  const [recipsRawMaybe, awardsRaw] = await Promise.all([
+    loadRecipientsOrFallback(),
+    loadCSV(AWARDS)
+  ]);
 
-  // If no recipients CSV at all, roll up from awards
+  // If no recipients CSVs at all, aggregate from awards
   const recipsRaw = recipsRawMaybe ?? (() => {
-    const byName = {};
+    const by = {};
     for (const row of awardsRaw) {
       const name = (row["Recipient Name"] || row["recipient_name"] || "").trim();
       const amt  = +row["Award Amount"] || +row["award_amount"] || 0;
       if (!name) continue;
-      byName[name] = (byName[name] || 0) + amt;
+      by[name] = (by[name] || 0) + amt;
     }
-    return Object.entries(byName).map(([name, amt]) => ({ "Recipient Name": name, "Award Amount": amt }));
+    return Object.entries(by).map(([name, amt]) => ({ "Recipient Name": name, "Award Amount": amt }));
   })();
 
-  // ...rest of your existing code...
+  // (rest of your existing code stays the same)
 }
 render().catch(err => {
   document.body.insertAdjacentHTML("beforeend", `<pre style="color:#c33">${err.stack || err}</pre>`);
