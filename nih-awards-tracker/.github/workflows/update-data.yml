@@ -24,25 +24,29 @@ jobs:
           python src/fetch_usaspending.py
           python src/enrich.py data/nih_top_recipients_last_90d.csv
 
-      - name: Commit updated data
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/*.csv data/*.json || true
-          git commit -m "chore: refresh USAspending data" || echo "No changes to commit"
-          git push
-
       - name: Publish data for GitHub Pages
         run: |
           mkdir -p docs/data
           cp -f data/*.csv docs/data/ || true
           cp -f data/*.json docs/data/ || true
+          # write timestamp used by the site footer
+          date -u +"%Y-%m-%d %H:%M UTC" > docs/last_update.txt
           touch docs/.nojekyll
 
-      - name: Commit updated data & site
+      - name: Update README 'Last Updated' badge text
+        run: |
+          DATE=$(date -u +"%Y--%m--%d--%H:%M--UTC")
+          # replace the shields.io segment in README (create badge first if missing)
+          if ! grep -q "last%20update-" README.md; then
+            echo -e "\n![Last Updated](https://img.shields.io/badge/last%20update-$DATE-blue)\n" >> README.md
+          else
+            sed -i "s|last%20update-[^)]*|last%20update-$DATE|g" README.md
+          fi
+
+      - name: Commit updated data, site, and README
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/data/* docs/.nojekyll || true
-          git commit -m "chore: refresh data for GitHub Pages" || echo "No changes"
+          git add data/*.csv data/*.json docs/data/* docs/last_update.txt docs/.nojekyll README.md || true
+          git commit -m "chore: refresh data & update timestamps" || echo "No changes"
           git push
