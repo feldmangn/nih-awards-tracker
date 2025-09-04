@@ -14,29 +14,31 @@ jobs:
         with:
           python-version: "3.11"
 
+      # All Python commands run inside the inner project dir
       - name: Install deps
+        working-directory: ./nih-awards-tracker
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Pull USAspending (last 90 days)
+        working-directory: ./nih-awards-tracker
         run: |
           python src/fetch_usaspending.py
           python src/enrich.py data/nih_top_recipients_last_90d.csv
 
+      # Publish data from inner /data to root /docs/data for GitHub Pages
       - name: Publish data for GitHub Pages
         run: |
           mkdir -p docs/data
-          cp -f data/*.csv docs/data/ || true
-          cp -f data/*.json docs/data/ || true
-          # write timestamp used by the site footer
+          cp -f nih-awards-tracker/data/*.csv docs/data/ || true
+          cp -f nih-awards-tracker/data/*.json docs/data/ || true
           date -u +"%Y-%m-%d %H:%M UTC" > docs/last_update.txt
           touch docs/.nojekyll
 
       - name: Update README 'Last Updated' badge text
         run: |
           DATE=$(date -u +"%Y--%m--%d--%H:%M--UTC")
-          # replace the shields.io segment in README (create badge first if missing)
           if ! grep -q "last%20update-" README.md; then
             echo -e "\n![Last Updated](https://img.shields.io/badge/last%20update-$DATE-blue)\n" >> README.md
           else
@@ -47,6 +49,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/*.csv data/*.json docs/data/* docs/last_update.txt docs/.nojekyll README.md || true
+          git add docs/data/* docs/last_update.txt docs/.nojekyll README.md nih-awards-tracker/data/*.csv nih-awards-tracker/data/*.json || true
           git commit -m "chore: refresh data & update timestamps" || echo "No changes"
           git push
