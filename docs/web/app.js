@@ -13,7 +13,7 @@ const TOP_RECIP_ENRICH = `${DATA_DIR}/nih_top_recipients_last_90d_enriched.csv${
 const TOP_RECIP        = `${DATA_DIR}/nih_top_recipients_last_90d.csv${bust()}`;
 const AWARDS           = `${DATA_DIR}/nih_awards_last_90d.csv${bust()}`;
 
-const fmtUSD = n =>
+const fmtUSD = (n) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -33,25 +33,13 @@ async function loadCSV(url) {
   if (!res.ok) throw new Error(`Fetch failed ${res.status} ${url}`);
   const text = await res.text();
   return new Promise((resolve) =>
-    Papa.parse(text, {
-      header: true,
-      dynamicTyping: true,
-      complete: (r) => resolve(r.data),
-    })
+    Papa.parse(text, { header: true, dynamicTyping: true, complete: (r) => resolve(r.data) })
   );
 }
 
 async function loadRecipientsOrFallback() {
-  try {
-    return await loadCSV(TOP_RECIP_ENRICH);
-  } catch (e) {
-    debug(e.message);
-  }
-  try {
-    return await loadCSV(TOP_RECIP);
-  } catch (e) {
-    debug(e.message);
-  }
+  try { return await loadCSV(TOP_RECIP_ENRICH); } catch(e){ debug(e.message); }
+  try { return await loadCSV(TOP_RECIP); }        catch(e){ debug(e.message); }
   return null;
 }
 
@@ -68,16 +56,14 @@ const SET_ASIDE_KEYS = [
 
 function getSetAsideFromRow(row) {
   if (!row) return null;
-  // exact match first
+  // exact names first
   for (const key of Object.keys(row)) {
     if (SET_ASIDE_KEYS.some((k) => k.toLowerCase() === String(key).toLowerCase())) {
       return row[key];
     }
   }
   // loose fallback
-  const loose = Object.keys(row).find((k) =>
-    /set.?aside|business.*size/i.test(k)
-  );
+  const loose = Object.keys(row).find((k) => /set.?aside|business.*size/i.test(k));
   return loose ? row[loose] : null;
 }
 
@@ -99,61 +85,93 @@ function isSmallBusinessSetAside(text) {
   return SB_PATTERNS.some((rx) => rx.test(s));
 }
 
-// ---------- DOM helpers (support both id styles) ----------
+// ---------- code filters & map helpers ----------
+function passesCodeFilters(r, pscPrefix, naicsPrefix) {
+  const p = (pscPrefix || "").trim().toUpperCase();
+  const n = (naicsPrefix || "").trim();
+  const pscOk   = !p || (r.psc && String(r.psc).toUpperCase().startsWith(p));
+  const naicsOk = !n || (r.naics && String(r.naics).startsWith(n));
+  return pscOk && naicsOk;
+}
+
+function aggregateByState(awards, metric, pscPrefix, naicsPrefix) {
+  const by = {};
+  for (const r of awards) {
+    if (!r.state) continue;
+    if (!passesCodeFilters(r, pscPrefix, naicsPrefix)) continue;
+    if (!(r.state in by)) by[r.state] = { amount: 0, count: 0 };
+    by[r.state].amount += (+r.award_amount || 0);
+    by[r.state].count  += 1;
+  }
+  return by;
+}
+
+function topRecipientsForState(awards, stateCode, pscPrefix, naicsPrefix, limit=100) {
+  const by = {};
+  for (const r of awards) {
+    if (!r.state || r.state !== stateCode) continue;
+    if (!passesCodeFilters(r, pscPrefix, naicsPrefix)) continue;
+    const name = r.recipient_name || "";
+    if (!name) continue;
+    if (!by[name]) by[name] = { amount: 0, count: 0 };
+    by[name].amount += (+r.award_amount || 0);
+    by[name].count  += 1;
+  }
+  const rows = Object.entries(by).map(([name, v]) => ({ name, ...v }));
+  rows.sort((a,b) => b.amount - a.amount || b.count - a.count);
+  return rows.slice(0, limit);
+}
+
+// ---------- DOM helpers ----------
 const $id = (a, b) => document.getElementById(a) || document.getElementById(b);
 
-// ---------- main renderer ----------
+// ---------- main ----------
 async function render() {
   const [recipsMaybe, awardsRaw] = await Promise.all([
     loadRecipientsOrFallback(),
-    loadCSV(AWARDS).catch((e) => {
-      debug(e.message);
-      return [];
-    }),
+    loadCSV(AWARDS).catch(e => { debug(e.message); return []; })
   ]);
 
   // normalize awards rows
-  const awards = awardsRaw.map((row) => {
+  const awards = awardsRaw.map(row => {
     const lower = {};
-    for (const [k, v] of Object.entries(row || {}))
-      lower[String(k || "").toLowerCase()] = v;
+    for (const [k,v] of Object.entries(row || {})) lower[String(k||"").toLowerCase()] = v;
+
+    const psc      = row["Product or Service Code (PSC)"] ?? row["PSC"] ?? row["psc"] ?? null;
+    const pscDesc  = row["PSC Description"] ?? row["psc description"] ?? null;
+    const naics    = row["NAICS Code"] ?? row["naics code"] ?? row["naics"] ?? null;
+    const naicsDes = row["NAICS Description"] ?? row["naics description"] ?? null;
+    const stateRaw = row["Place of Performance State Code"] ??
+                     row["place of performance state code"] ??
+                     lower["place of performance state code"] ?? null;
+
     return {
-      action_date:
-        lower["action date"] ?? lower["action_date"] ?? lower["actiondate"] ?? null,
-      recipient_name:
-        (lower["recipient name"] ?? lower["recipient_name"] ?? "").trim(),
+      action_date:  lower["action date"] ?? lower["action_date"] ?? lower["actiondate"] ?? null,
+      recipient_name: (lower["recipient name"] ?? lower["recipient_name"] ?? "").trim(),
       award_amount: toNum(lower["award amount"] ?? lower["award_amount"]),
       piid: lower["piid"] ?? null,
       set_aside: getSetAsideFromRow(row),
+      psc, pscDesc,
+      naics, naicsDesc: naicsDes,
+      state: (stateRaw || "").toString().slice(0,2).toUpperCase(),
     };
   });
 
-  // rollups — all recipients
+  // ----- rollups for top recipients -----
   const recipsAll = (
     recipsMaybe ??
     (() => {
       const by = {};
       for (const r of awards) if (r.recipient_name)
         by[r.recipient_name] = (by[r.recipient_name] || 0) + r.award_amount;
-      return Object.entries(by).map(([name, amount]) => ({
-        name,
-        amount,
-        set_aside: null,
-      }));
+      return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside: null }));
     })()
-  )
-    .map((r) => ({
-      name: r["Recipient Name"] ?? r["recipient_name"] ?? r.name ?? "",
-      amount: toNum(r["Award Amount"] ?? r["award_amount"] ?? r.amount),
-      set_aside:
-        r["Type of Set Aside"] ??
-        r["type_of_set_aside"] ??
-        r.set_aside ??
-        null,
-    }))
-    .filter((r) => r.name);
+  ).map(r => ({
+    name:   r["Recipient Name"] ?? r["recipient_name"] ?? r.name ?? "",
+    amount: toNum(r["Award Amount"] ?? r["award_amount"] ?? r.amount),
+    set_aside: r["Type of Set Aside"] ?? r["type_of_set_aside"] ?? r.set_aside ?? null
+  })).filter(r => r.name);
 
-  // rollups — small business / 8(a) only (from awards for accuracy)
   const recipsSB = (() => {
     const by = {};
     for (const r of awards) {
@@ -161,33 +179,26 @@ async function render() {
       if (!isSmallBusinessSetAside(r.set_aside)) continue;
       by[r.recipient_name] = (by[r.recipient_name] || 0) + r.award_amount;
     }
-    return Object.entries(by).map(([name, amount]) => ({
-      name,
-      amount,
-      set_aside: "SB/8(a)",
-    }));
+    return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside: "SB/8(a)" }));
   })();
 
-  // UI references (support both id styles)
+  // ----- Top recipients chart (tabs) -----
   const topNInput = document.getElementById("topN");
   const tabAllBtn = $id("tabAll", "tab-all");
   const tabSBBtn  = $id("tabSB", "tab-sb");
-  const chartTitle =
-    document.getElementById("chartTitle") || document.querySelector("h2");
+  const chartTitle = document.getElementById("chartTitle");
 
   let currentTab = "all";
-
   function setTab(tab) {
     currentTab = tab;
     if (tabAllBtn && tabSBBtn) {
-      tabAllBtn.classList.toggle("active", tab === "all");
-      tabSBBtn.classList.toggle("active", tab === "sb");
+      tabAllBtn.classList.toggle("active", tab==="all");
+      tabSBBtn.classList.toggle("active",  tab==="sb");
     }
     if (chartTitle) {
-      chartTitle.textContent =
-        tab === "sb"
-          ? "Top recipients — Small business / 8(a) only"
-          : "Top recipients (by obligated amount)";
+      chartTitle.textContent = tab==="sb"
+        ? "Top recipients — Small business / 8(a) only"
+        : "Top recipients (by obligated amount)";
     }
     drawChart();
   }
@@ -195,7 +206,7 @@ async function render() {
   function dataForTab() {
     const base = (currentTab === "sb" ? recipsSB : recipsAll)
       .slice()
-      .sort((a, b) => b.amount - a.amount);
+      .sort((a,b) => b.amount - a.amount);
     const N = Math.min(Math.max(+topNInput.value || 25, 1), 100);
     return base.slice(0, N);
   }
@@ -207,44 +218,121 @@ async function render() {
         "<p><em>No recipient data available for this tab.</em></p>";
       return;
     }
-    const hover = top.map(
-      (d) =>
-        `<b>${d.name}</b><br>${fmtUSD(d.amount)}${
-          d.set_aside ? `<br>${d.set_aside}` : ""
-        }<br><i>Click to open careers</i>`
+    const hover = top.map(d =>
+      `<b>${d.name}</b><br>${fmtUSD(d.amount)}${d.set_aside ? `<br>${d.set_aside}`:""}<br><i>Click to open careers</i>`
     );
-    Plotly.newPlot(
-      "chart",
-      [
-        {
-          type: "bar",
-          x: top.map((d) => d.amount),
-          y: top.map((d) => d.name),
-          orientation: "h",
-          hovertemplate: hover.map((h) => h + "<extra></extra>"),
-        },
-      ],
-      { margin: { l: 260, r: 20, t: 10, b: 40 }, xaxis: { title: "Total (USD)" } },
-      { displayModeBar: false }
-    );
+    Plotly.newPlot("chart", [{
+      type: "bar",
+      x: top.map(d => d.amount),
+      y: top.map(d => d.name),
+      orientation: "h",
+      hovertemplate: hover.map(h => h + "<extra></extra>")
+    }], { margin:{l:260,r:20,t:10,b:40}, xaxis:{title:"Total (USD)"} }, {displayModeBar:false});
 
-    // open careers search on bar click
     const chart = document.getElementById("chart");
-    chart.on("plotly_click", function (ev) {
+    chart.on("plotly_click", (ev) => {
       const name = ev.points?.[0]?.y;
       if (name) window.open(careersUrl(name), "_blank");
     });
   }
 
-  // wire events
   if (topNInput) topNInput.addEventListener("input", drawChart);
   if (tabAllBtn) tabAllBtn.addEventListener("click", () => setTab("all"));
-  if (tabSBBtn)  tabSBBtn.addEventListener("click", () => setTab("sb"));
-
-  // initial render
+  if (tabSBBtn)  tabSBBtn.addEventListener("click",  () => setTab("sb"));
   setTab("all");
 
-  // ----- table of recent awards -----
+  // ----- Map (choropleth) -----
+  function drawUSMap() {
+    const pscPrefix   = document.getElementById("pscFilter").value;
+    const naicsPrefix = document.getElementById("naicsFilter").value;
+    const metric      = document.getElementById("aggMetric").value;
+
+    const by = aggregateByState(awards, metric, pscPrefix, naicsPrefix);
+    const states = Object.keys(by);
+    const z = states.map(s => metric === "amount" ? by[s].amount : by[s].count);
+
+    if (!states.length) {
+      document.getElementById("map").innerHTML = "<p><em>No data for current filters.</em></p>";
+      document.getElementById("mapNote").textContent = "";
+      return;
+    }
+
+    const text = states.map(s => {
+      const a = by[s];
+      return `${s}: ${metric === "amount" ? fmtUSD(a.amount) : a.count + " awards"}`;
+    });
+
+    const data = [{
+      type: "choropleth",
+      locationmode: "USA-states",
+      locations: states,   // e.g., ["MD", "VA", ...]
+      z: z,
+      text: text,
+      colorbar: { title: metric === "amount" ? "USD" : "Count" }
+    }];
+
+    const layout = {
+      geo: { scope: "usa", projection: { type: "albers usa" } },
+      margin: { l: 10, r: 10, t: 10, b: 10 },
+    };
+
+    Plotly.newPlot("map", data, layout, { displayModeBar: false });
+
+    // click a state -> fill the side panel with recipients
+    const mapEl = document.getElementById("map");
+    mapEl.on("plotly_click", (ev) => {
+      const loc = ev.points?.[0]?.location; // "MD", "CA"
+      if (!loc) return;
+
+      const top = topRecipientsForState(
+        awards, loc, pscPrefix, naicsPrefix, 200
+      );
+
+      const title = document.getElementById("stateTitle");
+      const list  = document.getElementById("stateList");
+      const sum   = document.getElementById("stateSummary");
+
+      title.textContent = `Recipients in ${loc}`;
+      if (!top.length) {
+        list.innerHTML = "<li class='muted'>No recipients for current filters.</li>";
+        sum.textContent = "";
+        return;
+      }
+
+      const totalAmt = top.reduce((s,r)=>s+r.amount,0);
+      const totalCnt = top.reduce((s,r)=>s+r.count,0);
+      sum.textContent = `${top.length} recipients · ${totalCnt} awards · ${fmtUSD(totalAmt)} total`;
+
+      list.innerHTML = top.map(r => `
+        <li>
+          <strong>${r.name}</strong>
+          — ${fmtUSD(r.amount)} (${r.count})
+          · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a>
+        </li>
+      `).join("");
+    });
+  }
+
+  // Initial map + wiring
+  drawUSMap();
+  document.getElementById("applyFilters").addEventListener("click", () => {
+    drawUSMap();
+    // clear side panel on filter change
+    document.getElementById("stateTitle").textContent = "Click a state";
+    document.getElementById("stateSummary").textContent = "";
+    document.getElementById("stateList").innerHTML = "";
+  });
+  document.getElementById("aggMetric").addEventListener("change", drawUSMap);
+  const clearSelBtn = document.getElementById("clearSelection");
+  if (clearSelBtn) {
+    clearSelBtn.addEventListener("click", () => {
+      document.getElementById("stateTitle").textContent = "Click a state";
+      document.getElementById("stateSummary").textContent = "";
+      document.getElementById("stateList").innerHTML = "";
+    });
+  }
+
+  // ----- Raw awards table -----
   const thead = document.querySelector("#awardsTable thead");
   const tbody = document.querySelector("#awardsTable tbody");
   if (thead && tbody) {
@@ -254,6 +342,8 @@ async function render() {
       <th>Award Amount</th>
       <th>PIID</th>
       <th>Type of Set Aside / Size</th>
+      <th>PSC</th>
+      <th>NAICS</th>
       <th>Careers</th>
     </tr>`;
 
@@ -264,6 +354,8 @@ async function render() {
         <td>${fmtUSD(r.award_amount)}</td>
         <td>${r.piid ?? ""}</td>
         <td>${r.set_aside ?? ""}</td>
+        <td>${r.psc ?? ""}</td>
+        <td>${r.naics ?? ""}</td>
         <td><a href="${careersUrl(r.recipient_name || "")}" target="_blank" rel="noopener">Search jobs</a></td>
       </tr>
     `).join("");
