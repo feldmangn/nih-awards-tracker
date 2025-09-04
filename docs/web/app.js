@@ -136,11 +136,29 @@ async function render() {
   const awards = awardsRaw.map(row => {
     const lower = {};
     for (const [k,v] of Object.entries(row || {})) lower[String(k||"").toLowerCase()] = v;
+    //CODE HERE
+    const pscKeys = [
+      "Product or Service Code (PSC)", "Product or Service Code",
+      "Product/Service Code", "Product Service Code", "PSC", "psc"
+    ];
+    const pscDescKeys = ["PSC Description", "psc description"];
+    const naicsKeys = ["NAICS Code", "naics code", "NAICS", "naics"];
+    const naicsDescKeys = ["NAICS Description", "naics description"];
 
-    const psc      = row["Product or Service Code (PSC)"] ?? row["PSC"] ?? row["psc"] ?? null;
-    const pscDesc  = row["PSC Description"] ?? row["psc description"] ?? null;
-    const naics    = row["NAICS Code"] ?? row["naics code"] ?? row["naics"] ?? null;
-    const naicsDes = row["NAICS Description"] ?? row["naics description"] ?? null;
+    function getFirst(row, keys) {
+      for (const k of keys) if (k in row) return row[k];
+      const lower = Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).toLowerCase(), v]));
+      for (const k of keys) {
+        const lk = String(k).toLowerCase();
+        if (lk in lower) return lower[lk];
+      }
+      return null;
+    }
+
+    const psc      = getFirst(row, pscKeys);
+    const pscDesc  = getFirst(row, pscDescKeys);
+    const naics    = getFirst(row, naicsKeys);
+    const naicsDes = getFirst(row, naicsDescKeys);    
     const stateRaw = row["Place of Performance State Code"] ??
                      row["place of performance state code"] ??
                      lower["place of performance state code"] ?? null;
