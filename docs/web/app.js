@@ -1,4 +1,4 @@
-// ---------- config & helpers ----------
+// ================== Config & helpers ==================
 const DEBUG = false;
 const debug = (m) => {
   if (!DEBUG) return;
@@ -26,7 +26,9 @@ const toNum = (v) =>
 const careersUrl = (name) =>
   `https://www.google.com/search?q=${encodeURIComponent(`${name} careers jobs`)}`;
 
-// ---------- CSV loading ----------
+const $id = (a, b) => document.getElementById(a) || document.getElementById(b);
+
+// ================== CSV loading ==================
 async function loadCSV(url) {
   const res = await fetch(url, { cache: "no-store" });
   debug(`fetch ${url} -> ${res.status}`);
@@ -43,9 +45,10 @@ async function loadRecipientsOrFallback() {
   return null;
 }
 
-// ---------- set-aside / small-business detection ----------
+// ================== Set-aside (SB/8a) detection ==================
 const SET_ASIDE_KEYS = [
   "Type of Set Aside",
+  "Type Of Set Aside",
   "type_of_set_aside",
   "Set Aside Type",
   "Contracting Officer Business Size Determination",
@@ -56,13 +59,11 @@ const SET_ASIDE_KEYS = [
 
 function getSetAsideFromRow(row) {
   if (!row) return null;
-  // exact names first
   for (const key of Object.keys(row)) {
     if (SET_ASIDE_KEYS.some((k) => k.toLowerCase() === String(key).toLowerCase())) {
       return row[key];
     }
   }
-  // loose fallback
   const loose = Object.keys(row).find((k) => /set.?aside|business.*size/i.test(k));
   return loose ? row[loose] : null;
 }
@@ -85,7 +86,55 @@ function isSmallBusinessSetAside(text) {
   return SB_PATTERNS.some((rx) => rx.test(s));
 }
 
-// ---------- code filters & map helpers ----------
+// ================== Key detection for your title-case headers ==================
+const PSC_KEYS = [
+  "Product Or Service Code (Psc)",    // your file
+  "Product or Service Code (PSC)",
+  "Product or Service Code",
+  "Product/Service Code",
+  "Product Service Code",
+  "PSC", "psc",
+];
+
+const PSC_DESC_KEYS = [
+  "Psc Description",                  // your file
+  "PSC Description",
+  "psc description",
+];
+
+const NAICS_KEYS = [
+  "Naics Code",                       // your file
+  "NAICS Code",
+  "NAICS",
+  "naics code",
+  "naics",
+];
+
+const NAICS_DESC_KEYS = [
+  "Naics Description",                // your file
+  "NAICS Description",
+  "naics description",
+];
+
+const STATE_KEYS = [
+  "Place Of Performance State Code",  // your file
+  "Place of Performance State Code",
+  "place of performance state code",
+];
+
+function getFirst(row, keys) {
+  for (const k of keys) if (k in row) return row[k];
+  const lower = Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [String(k).toLowerCase(), v])
+  );
+  for (const k of keys) {
+    const lk = String(k).toLowerCase();
+    if (lk in lower) return lower[lk];
+  }
+  return null;
+}
+
+// ================== Filters & aggregation (map) ==================
 function passesCodeFilters(r, pscPrefix, naicsPrefix) {
   const p = (pscPrefix || "").trim().toUpperCase();
   const n = (naicsPrefix || "").trim();
@@ -122,10 +171,7 @@ function topRecipientsForState(awards, stateCode, pscPrefix, naicsPrefix, limit=
   return rows.slice(0, limit);
 }
 
-// ---------- DOM helpers ----------
-const $id = (a, b) => document.getElementById(a) || document.getElementById(b);
-
-// ---------- main ----------
+// ================== Main ==================
 async function render() {
   const [recipsMaybe, awardsRaw] = await Promise.all([
     loadRecipientsOrFallback(),
@@ -136,46 +182,26 @@ async function render() {
   const awards = awardsRaw.map(row => {
     const lower = {};
     for (const [k,v] of Object.entries(row || {})) lower[String(k||"").toLowerCase()] = v;
-    //CODE HERE
-    const pscKeys = [
-      "Product or Service Code (PSC)", "Product or Service Code",
-      "Product/Service Code", "Product Service Code", "PSC", "psc"
-    ];
-    const pscDescKeys = ["PSC Description", "psc description"];
-    const naicsKeys = ["NAICS Code", "naics code", "NAICS", "naics"];
-    const naicsDescKeys = ["NAICS Description", "naics description"];
 
-    function getFirst(row, keys) {
-      for (const k of keys) if (k in row) return row[k];
-      const lower = Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).toLowerCase(), v]));
-      for (const k of keys) {
-        const lk = String(k).toLowerCase();
-        if (lk in lower) return lower[lk];
-      }
-      return null;
-    }
-
-    const psc      = getFirst(row, pscKeys);
-    const pscDesc  = getFirst(row, pscDescKeys);
-    const naics    = getFirst(row, naicsKeys);
-    const naicsDes = getFirst(row, naicsDescKeys);    
-    const stateRaw = row["Place of Performance State Code"] ??
-                     row["place of performance state code"] ??
-                     lower["place of performance state code"] ?? null;
+    const psc      = getFirst(row, PSC_KEYS);
+    const pscDesc  = getFirst(row, PSC_DESC_KEYS);
+    const naics    = getFirst(row, NAICS_KEYS);
+    const naicsDes = getFirst(row, NAICS_DESC_KEYS);
+    const stateRaw = getFirst(row, STATE_KEYS);
 
     return {
       action_date:  lower["action date"] ?? lower["action_date"] ?? lower["actiondate"] ?? null,
       recipient_name: (lower["recipient name"] ?? lower["recipient_name"] ?? "").trim(),
       award_amount: toNum(lower["award amount"] ?? lower["award_amount"]),
-      piid: lower["piid"] ?? null,
+      piid: lower["piid"] ?? lower["piid "] ?? null, // tolerate odd spacing
       set_aside: getSetAsideFromRow(row),
       psc, pscDesc,
       naics, naicsDesc: naicsDes,
-      state: (stateRaw || "").toString().slice(0,2).toUpperCase(),
+      state: (stateRaw || "").toString().slice(0, 2).toUpperCase(),
     };
   });
 
-  // ----- rollups for top recipients -----
+  // ===== Top recipients rollups (All vs SB/8a) =====
   const recipsAll = (
     recipsMaybe ??
     (() => {
@@ -187,7 +213,7 @@ async function render() {
   ).map(r => ({
     name:   r["Recipient Name"] ?? r["recipient_name"] ?? r.name ?? "",
     amount: toNum(r["Award Amount"] ?? r["award_amount"] ?? r.amount),
-    set_aside: r["Type of Set Aside"] ?? r["type_of_set_aside"] ?? r.set_aside ?? null
+    set_aside: r["Type of Set Aside"] ?? r["Type Of Set Aside"] ?? r["type_of_set_aside"] ?? r.set_aside ?? null
   })).filter(r => r.name);
 
   const recipsSB = (() => {
@@ -200,10 +226,10 @@ async function render() {
     return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside: "SB/8(a)" }));
   })();
 
-  // ----- Top recipients chart (tabs) -----
-  const topNInput = document.getElementById("topN");
-  const tabAllBtn = $id("tabAll", "tab-all");
-  const tabSBBtn  = $id("tabSB", "tab-sb");
+  // ===== Top recipients chart (tabs) =====
+  const topNInput  = document.getElementById("topN");
+  const tabAllBtn  = $id("tabAll", "tab-all");
+  const tabSBBtn   = $id("tabSB", "tab-sb");
   const chartTitle = document.getElementById("chartTitle");
 
   let currentTab = "all";
@@ -259,10 +285,10 @@ async function render() {
   if (tabSBBtn)  tabSBBtn.addEventListener("click",  () => setTab("sb"));
   setTab("all");
 
-  // ----- Map (choropleth) -----
+  // ===== US Map (choropleth) with PSC/NAICS filters =====
   function drawUSMap() {
-    const pscPrefix   = document.getElementById("pscFilter").value;
-    const naicsPrefix = document.getElementById("naicsFilter").value;
+    const pscPrefix   = (document.getElementById("pscFilter")?.value || "").trim();
+    const naicsPrefix = (document.getElementById("naicsFilter")?.value || "").trim();
     const metric      = document.getElementById("aggMetric").value;
 
     const by = aggregateByState(awards, metric, pscPrefix, naicsPrefix);
@@ -271,7 +297,8 @@ async function render() {
 
     if (!states.length) {
       document.getElementById("map").innerHTML = "<p><em>No data for current filters.</em></p>";
-      document.getElementById("mapNote").textContent = "";
+      document.getElementById("mapNote").textContent =
+        (pscPrefix || naicsPrefix) ? "Try clearing or changing PSC/NAICS filters." : "";
       return;
     }
 
@@ -283,7 +310,7 @@ async function render() {
     const data = [{
       type: "choropleth",
       locationmode: "USA-states",
-      locations: states,   // e.g., ["MD", "VA", ...]
+      locations: states,
       z: z,
       text: text,
       colorbar: { title: metric === "amount" ? "USD" : "Count" }
@@ -296,15 +323,12 @@ async function render() {
 
     Plotly.newPlot("map", data, layout, { displayModeBar: false });
 
-    // click a state -> fill the side panel with recipients
     const mapEl = document.getElementById("map");
     mapEl.on("plotly_click", (ev) => {
-      const loc = ev.points?.[0]?.location; // "MD", "CA"
+      const loc = ev.points?.[0]?.location; // e.g., "MD"
       if (!loc) return;
 
-      const top = topRecipientsForState(
-        awards, loc, pscPrefix, naicsPrefix, 200
-      );
+      const top = topRecipientsForState(awards, loc, pscPrefix, naicsPrefix, 200);
 
       const title = document.getElementById("stateTitle");
       const list  = document.getElementById("stateList");
@@ -331,11 +355,10 @@ async function render() {
     });
   }
 
-  // Initial map + wiring
+  // Initial map + events
   drawUSMap();
   document.getElementById("applyFilters").addEventListener("click", () => {
     drawUSMap();
-    // clear side panel on filter change
     document.getElementById("stateTitle").textContent = "Click a state";
     document.getElementById("stateSummary").textContent = "";
     document.getElementById("stateList").innerHTML = "";
@@ -350,7 +373,7 @@ async function render() {
     });
   }
 
-  // ----- Raw awards table -----
+  // ===== Raw awards table =====
   const thead = document.querySelector("#awardsTable thead");
   const tbody = document.querySelector("#awardsTable tbody");
   if (thead && tbody) {
@@ -385,7 +408,7 @@ async function render() {
   }
 }
 
-// run
+// ================== Run ==================
 render().catch((err) => {
   const msg = err.stack || err;
   console.error(msg);
