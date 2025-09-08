@@ -8,24 +8,24 @@
 
 /* ================= config & helpers ================= */
 
+/* ===== top of app.js (replace your current header with this) ===== */
 const DEBUG = false;
 const debug = (m) => { if (DEBUG) console.log(m); };
 
 const bust = () => `?t=${Date.now()}`;
 
-// Base URL (passed from Jekyll via window.__NIH_BASEURL__)
+// Base URL from Jekyll; ignore it in Codespaces/local dev
 let BASE = window.__NIH_BASEURL__ || "";
-
-// When developing locally or in Codespaces, ignore baseurl
 const H = location.hostname;
-if (H === "localhost" || H.endsWith(".app.github.dev")) {
-  BASE = "";
-}
+if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";
 
-const DATA_DIR        = `${BASE}/data`;
-const TOP_RECIP_ENRICH = `${DATA_DIR}/nih_top_recipients_last_90d_enriched.csv${bust()}`;
-const TOP_RECIP        = `${DATA_DIR}/nih_top_recipients_last_90d.csv${bust()}`;
-const AWARDS           = `${DATA_DIR}/nih_awards_last_90d.csv${bust()}`;
+// Prefer URLs injected from the page; fallback to BASE/data/...
+const U = window.APP_DATA_URLS || {};
+const DATA_DIR = `${BASE}/data`;
+
+const AWARDS           = (U.AWARDS           || `${DATA_DIR}/nih_awards_last_90d.csv`)                 + bust();
+const TOP_RECIP        = (U.TOP_RECIP        || `${DATA_DIR}/nih_top_recipients_last_90d.csv`)         + bust();
+const TOP_RECIP_ENRICH = (U.TOP_RECIP_ENRICH || `${DATA_DIR}/nih_top_recipients_last_90d_enriched.csv`) + bust();
 
 const fmtUSD = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
@@ -38,6 +38,7 @@ const careersUrl = (name) =>
   `https://www.google.com/search?q=${encodeURIComponent(`${name} careers jobs`)}`;
 
 const $ = (id) => document.getElementById(id);
+/* ===== end replacement ===== */
 
 /* ================= CSV loading ================= */
 

@@ -18,13 +18,13 @@ permalink: /data/
 
 <div class="prose">
 
-  <!-- Top recipients (chart controls reused by app.js) -->
+  <!-- Top recipients -->
   <div class="card" style="margin-bottom:1rem;">
     <div style="display:flex; align-items:center; gap:.75rem; margin-bottom:.75rem;">
       <button id="tab-all" class="pill active">All recipients</button>
       <button id="tab-sb"  class="pill">Small business / 8(a)</button>
       <label for="topN" style="margin-left:1rem;">Show top N:</label>
-      <input id="topN" type="number" value="25" min="1" max="100" style="width:5rem;">
+      <input id="topN" type="number" value="25" min="1" max="200" style="width:5rem;">
     </div>
     <h2 id="chartTitle" style="margin:0 0 .5rem 0;">Top recipients (by obligated amount)</h2>
     <div id="chart" style="min-height:420px;"></div>
@@ -73,7 +73,7 @@ permalink: /data/
     </div>
   </div>
 
-  <!-- Recent awardees (aggregated recipients table) -->
+  <!-- Recent awardees (aggregated) -->
   <h2 style="margin-top:2rem;">Recent awardees (top recipients by total)</h2>
   <div class="card">
     <div id="awardeesSummary" class="muted" style="margin:.5rem 0;"></div>
@@ -88,17 +88,31 @@ permalink: /data/
   <div id="debug"></div>
 </div>
 
-<!-- Libraries -->
+<!-- libs -->
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
-<!-- Pass baseurl from Jekyll to JS -->
+<!-- pass baseurl to JS -->
 <script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
 
-<!-- Your app -->
+<!-- Tell JS exactly where the data files are (respects baseurl) -->
+<script>
+  window.APP_DATA_URLS = {
+    AWARDS: "{{ '/data/nih_awards_last_90d.csv' | relative_url }}",
+    TOP_RECIP: "{{ '/data/nih_top_recipients_last_90d.csv' | relative_url }}",
+    TOP_RECIP_ENRICH: "{{ '/data/nih_top_recipients_last_90d_enriched.csv' | relative_url }}"
+  };
+</script>
+
+<!-- libs (must be before app.js) -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<!-- pass baseurl to JS -->
+<script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
+
+<!-- your app -->
 <script src="{{ '/assets/js/app.js' | relative_url }}"></script>
 
-<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
+<!-- your app -->
 <script src="{{ '/assets/js/app.js' | relative_url }}"></script>
