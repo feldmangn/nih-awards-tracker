@@ -66,3 +66,9 @@ permalink: /dashboard/
   };
 </script>
 <script src="{{ '/assets/js/app.js' | relative_url }}"></script>
+
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
+<script src="{{ '/assets/js/app.js' | relative_url }}"></script>
