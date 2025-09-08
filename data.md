@@ -88,14 +88,14 @@ permalink: /data/
   <div id="debug"></div>
 </div>
 
-<!-- libs -->
+<!-- 1) libraries (must load before your app) -->
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
-<!-- pass baseurl to JS -->
+<!-- 2) Jekyll baseurl -> JS -->
 <script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
 
-<!-- Tell JS exactly where the data files are (respects baseurl) -->
+<!-- 3) Exact data URLs (works locally and on Pages) -->
 <script>
   window.APP_DATA_URLS = {
     AWARDS: "{{ '/data/nih_awards_last_90d.csv' | relative_url }}",
@@ -104,15 +104,5 @@ permalink: /data/
   };
 </script>
 
-<!-- libs (must be before app.js) -->
-<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-
-<!-- pass baseurl to JS -->
-<script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
-
-<!-- your app -->
-<script src="{{ '/assets/js/app.js' | relative_url }}"></script>
-
-<!-- your app -->
+<!-- 4) your app (after all configs/libs) -->
 <script src="{{ '/assets/js/app.js' | relative_url }}"></script>
