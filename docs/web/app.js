@@ -10,7 +10,11 @@ const DEBUG = false;
 const debug = (m) => { if (DEBUG) console.log(m); };
 
 const bust = () => `?t=${Date.now()}`;
-const DATA_DIR = "./data";
+// base URL for GitHub Pages
+const BASE = window.__NIH_BASEURL__ || "";
+const DATA_DIR = `${BASE}/data`;
+
+const bust = () => `?t=${Date.now()}`;
 const TOP_RECIP_ENRICH = `${DATA_DIR}/nih_top_recipients_last_90d_enriched.csv${bust()}`;
 const TOP_RECIP        = `${DATA_DIR}/nih_top_recipients_last_90d.csv${bust()}`;
 const AWARDS           = `${DATA_DIR}/nih_awards_last_90d.csv${bust()}`;
