@@ -1,0 +1,25 @@
+title: NIH Awards Tracker
+description: Contracts & awards explorer
+url: "https://feldmangn.github.io"
+baseurl: "/nih-awards-tracker"
+
+remote_theme: hydecorp/hydejack
+plugins:
+  - jekyll-remote-theme
+  - jekyll-include-cache
+  - jekyll-feed
+
+# Hydejack basics
+hydejack:
+  no_inline_css: false
+  theme_variant: "auto"   # light/dark toggle if supported
+  # add your social links, author, etc.
+
+# Navigation (example)
+menu:
+  - title: Home
+    url: /
+  - title: Data
+    url: /data/
+  - title: About
+    url: /about/
