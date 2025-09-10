@@ -13,8 +13,9 @@ permalink: /data/
   .card { padding:1rem; border:1px solid #e5e5e5; border-radius:.75rem; }
   table.table { border-collapse: collapse; width: 100%; }
   table.table thead th { background:#1f77b4; color:#fff; text-align:left; padding:.6rem .8rem; position:sticky; top:0; }
-  table.table tbody td { padding:.55rem .8rem; border-bottom:1px solid #eee; }
+  table.table tbody td { padding:.35rem .6rem; border-bottom:1px solid #eee; font-size:.95rem; }
   table.table tbody tr:nth-child(even) { background:#f7fbff; }
+  able.table thead th { background:#1f77b4; color:#fff; text-align:left; padding:.45rem .6rem; position:sticky; top:0; cursor:pointer; }
 </style>
 
 <div class="prose">
@@ -73,6 +74,7 @@ permalink: /data/
       <a class="pill" href="{{ '/data/nih_awards_last_90d.csv'  | relative_url }}">Download CSV</a>
       <a class="pill" href="{{ '/data/nih_awards_last_90d.json' | relative_url }}">Download JSON</a>
       <button id="showMore" class="pill">Show more rows</button>
+      <button id="showAll"  class="pill">Show all</button>
     </div>
     <div style="overflow:auto;">
       <table id="awardsTable" class="table" style="min-width:1000px;">

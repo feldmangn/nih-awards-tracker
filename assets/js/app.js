@@ -605,25 +605,87 @@ async function render() {
 
   /* ----- Recent awards table (raw) ----- */
 
+  /* ----- Recent awards table (raw) ----- */
+
   const thead = document.querySelector("#awardsTable thead");
   const tbody = document.querySelector("#awardsTable tbody");
-  let awardsSlice = 500;
+
+  /* Compact default: start with 50 rows */
+  let awardsSlice = 50;
+
+  /* Sorting state */
+  const HEADERS = [
+    { label: "Action Date", key: "action_date", type: "date" },
+    { label: "Recipient Name", key: "recipient_name", type: "text" },
+    { label: "Award Amount", key: "award_amount", type: "num" },
+    { label: "PIID", key: "piid", type: "text" },
+    { label: "Type of Set Aside / Size", key: "set_aside", type: "text" },
+    { label: "PSC", key: "psc", type: "text" },
+    { label: "NAICS", key: "naics", type: "text" },
+    { label: "Careers", key: null, type: "text" },
+  ];
+
+  let sortState = { key: "action_date", dir: "desc" };
+
+  function sortAwards(rows) {
+    const { key, dir } = sortState;
+    if (!key) return rows;
+
+    const type = HEADERS.find(h => h.key === key)?.type || "text";
+    const cmp = (a, b) => {
+      let va = a[key], vb = b[key];
+      if (type === "num") {
+        va = +va || 0; vb = +vb || 0;
+      } else if (type === "date") {
+        va = new Date(va).getTime() || 0;
+        vb = new Date(vb).getTime() || 0;
+      } else {
+        va = (va ?? "").toString().toUpperCase();
+        vb = (vb ?? "").toString().toUpperCase();
+      }
+      if (va < vb) return -1;
+      if (va > vb) return 1;
+      return 0;
+    };
+
+    const out = rows.slice().sort(cmp);
+    return dir === "desc" ? out.reverse() : out;
+  }
+
+  function renderHeader() {
+    if (!thead) return;
+    thead.innerHTML = `<tr>${
+      HEADERS.map(h => {
+        const isSorted = h.key && h.key === sortState.key;
+        const arrow = isSorted ? (sortState.dir === "asc" ? " ▲" : " ▼") : "";
+        const attrs = h.key ? `data-key="${h.key}" data-type="${h.type}"` : "";
+        return `<th ${attrs}>${h.label}${arrow}</th>`;
+      }).join("")
+    }</tr>`;
+
+    // click-to-sort
+    thead.onclick = (ev) => {
+      const th = ev.target.closest("th[data-key]");
+      if (!th) return;
+      const key = th.dataset.key;
+      sortState = {
+        key,
+        dir: sortState.key === key && sortState.dir === "asc" ? "desc" : "asc",
+      };
+      renderAwardsTable(); // re-render with new sort
+    };
+  }
 
   function renderAwardsTable() {
     if (!thead || !tbody) return;
 
-    thead.innerHTML = `<tr>
-      <th>Action Date</th>
-      <th>Recipient Name</th>
-      <th>Award Amount</th>
-      <th>PIID</th>
-      <th>Type of Set Aside / Size</th>
-      <th>PSC</th>
-      <th>NAICS</th>
-      <th>Careers</th>
-    </tr>`;
+    renderHeader();
 
-    tbody.innerHTML = awards.slice(0, awardsSlice).map((r) => `
+    // Sort the full dataset, then slice to current page
+    const sorted = sortAwards(awards);
+    const rows = sorted.slice(0, awardsSlice);
+
+    tbody.innerHTML = rows.map((r) => `
       <tr>
         <td>${r.action_date ?? ""}</td>
         <td>${r.recipient_name ?? ""}</td>
@@ -642,14 +704,26 @@ async function render() {
 
   renderAwardsTable();
 
+  /* Pagination buttons */
   const showMoreBtn = $("showMore");
   if (showMoreBtn) {
     showMoreBtn.addEventListener("click", () => {
-      awardsSlice = Math.min(awardsSlice + 1000, awards.length);
+      awardsSlice = Math.min(awardsSlice + 200, awards.length);
       renderAwardsTable();
       if (awardsSlice >= awards.length) showMoreBtn.disabled = true;
     });
   }
+
+  const showAllBtn = $("showAll");
+  if (showAllBtn) {
+    showAllBtn.addEventListener("click", () => {
+      awardsSlice = awards.length;
+      renderAwardsTable();
+      if (showMoreBtn) showMoreBtn.disabled = true;
+      showAllBtn.disabled = true;
+    });
+  }
+
 
   /* ----- Recent awardees (aggregated recipients) ----- */
 
