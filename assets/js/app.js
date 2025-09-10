@@ -27,6 +27,10 @@ const AWARDS_URL           = (U.AWARDS           || `${DATA_DIR}/nih_awards_last
 const TOP_RECIP_URL        = (U.TOP_RECIP        || `${DATA_DIR}/nih_top_recipients_last_90d.csv`)          + bust();
 const TOP_RECIP_ENRICH_URL = (U.TOP_RECIP_ENRICH || `${DATA_DIR}/nih_top_recipients_last_90d_enriched.csv`) + bust();
 const ZIP_CENTROIDS_URL    = `${DATA_DIR}/zip_centroids.json${bust()}`;
+window.AWARDS_URL = AWARDS_URL;
+window.TOP_RECIP_URL = TOP_RECIP_URL;
+window.TOP_RECIP_ENRICH_URL = TOP_RECIP_ENRICH_URL;
+window.ZIP_CENTROIDS_URL = ZIP_CENTROIDS_URL;
 
 const fmtUSD = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
