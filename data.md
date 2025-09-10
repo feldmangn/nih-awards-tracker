@@ -7,6 +7,7 @@ permalink: /data/
 <style>
   .pill { padding:.45rem .8rem; border-radius:.6rem; border:1px solid #ddd; cursor:pointer; background:#fff; }
   .pill:hover { background:#f6f6f6; }
+  .pill.active { background:#eef6ff; border-color:#c6e0ff; }
   .muted { color:#666; }
   .row { display:flex; gap:2rem; flex-wrap:wrap; align-items:flex-start; }
   .card { padding:1rem; border:1px solid #e5e5e5; border-radius:.75rem; }
@@ -46,6 +47,14 @@ permalink: /data/
 
   <div class="row">
     <div class="card" style="flex:2; min-width:420px;">
+      <!-- Map controls -->
+      <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.75rem;">
+        <button id="togglePoints" class="pill">Show recipient points</button>
+        <button id="backToUS" class="pill" style="display:none;">← Back to US</button>
+        <button id="togglePoints" class="pill" style="display:none; margin-bottom:.75rem;">Hide recipient points</button>
+
+      </div>
+      <!-- The map -->
       <div id="map" style="height:520px;"></div>
     </div>
 
@@ -91,6 +100,8 @@ permalink: /data/
 <!-- 1) libraries (must load before your app) -->
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<!-- topojson for any future state/county outlines (optional but harmless) -->
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
 
 <!-- 2) Jekyll baseurl -> JS -->
 <script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>

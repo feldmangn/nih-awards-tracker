@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-NIH awards tracker via TRANSACTIONS (robust)
-1) Query /search/spending_by_transaction/ with safe fields & sort.
-2) Enrich each row via /awards/{internal_id}/ for:
-   - type_set_aside, type_set_aside_description
-   - contracting_officers_determination_of_business_size
-   - PSC/NAICS/PoP/PIID (fallbacks)
-3) Filter to NIH awarding subtier from detail payload.
-4) Write CSV/JSON and top recipients. Includes "Is Small Business" & "Is 8a Set-Aside".
+NIH awards tracker via TRANSACTIONS (fast + robust)
+- Query NIH directly (Awarding + subtier = National Institutes of Health)
+- Optional fast mode (--no-detail) skips /awards/{id} calls
+- Robust detail mode fetches set-aside, business size, PoP city/zip/county
+- Writes CSV/JSON and top recipients
 
 Usage:
-  python src/fetch_usaspending.py --days 90 --outdir data
+  python src/fetch_usaspending.py --days 90 --outdir data [--no-detail] [--max-pages 4]
 """
 
 import argparse, json, pathlib, sys, time, random
@@ -22,33 +19,33 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-TXN_API = "https://api.usaspending.gov/api/v2/search/spending_by_transaction/"
+TXN_API    = "https://api.usaspending.gov/api/v2/search/spending_by_transaction/"
 DETAIL_API = "https://api.usaspending.gov/api/v2/awards/{award_id}/"
 
-# Transaction-safe page & sort
+# Tuning
 PAGE_LIMIT = 75
-TIMEOUT = 60
-TXN_SORT = "Action Date"        # valid for transactions
-TXN_ORDER = "desc"
+TIMEOUT    = 60
+TXN_SORT   = "Action Date"
+TXN_ORDER  = "desc"
 
-# Fields that the transaction endpoint explicitly allows (based on API response list)
+# Fields we can rely on from the transaction endpoint
 TXN_FIELDS = [
-    "internal_id",
+    "generated_internal_id",            # preferred id for detail
+    "internal_id",                      # fallback id for detail
     "Award ID",
     "Recipient Name",
     "Action Date",
     "Transaction Amount",
     "Awarding Agency",
     "Awarding Sub Agency",
-    "product_or_service_code",          # <-- was psc_code
+    "product_or_service_code",
     "product_or_service_description",
     "naics_code",
     "naics_description",
-    "pop_state_code",                   # <-- was Primary Place of Performance
+    "pop_state_code",
 ]
 
-
-# Final output columns (same shape as your pages expect)
+# Final output columns (front-end expects these)
 COLS_OUT = [
     "Award Id",
     "Recipient Name",
@@ -56,6 +53,9 @@ COLS_OUT = [
     "Award Amount",
     "Piid",
     "Place Of Performance State Code",
+    "Place Of Performance City Name",
+    "Place Of Performance ZIP Code",
+    "Place Of Performance County Name",
     "Product Or Service Code (Psc)",
     "Psc Description",
     "Naics Code",
@@ -73,13 +73,12 @@ FRIENDLY_TXN = {
     "Recipient Name": "Recipient Name",
     "Action Date": "Action Date",
     "Transaction Amount": "Award Amount",
-    "product_or_service_code": "Product Or Service Code (Psc)",   # <-- was psc_code
+    "product_or_service_code": "Product Or Service Code (Psc)",
     "product_or_service_description": "Psc Description",
     "naics_code": "Naics Code",
     "naics_description": "Naics Description",
-    "pop_state_code": "Place Of Performance State Code",          # <-- new
+    "pop_state_code": "Place Of Performance State Code",
 }
-
 
 def date_window(last_n_days: int) -> Tuple[str, str]:
     end = date.today()
@@ -99,7 +98,7 @@ def make_session() -> requests.Session:
     s.mount("https://", adapter)
     s.headers.update({
         "Accept": "application/json",
-        "User-Agent": "nih-awards-tracker/txn/1.0 (+https://github.com/feldmangn/nih-awards-tracker)"
+        "User-Agent": "nih-awards-tracker/txn/1.3 (+https://github.com/feldmangn/nih-awards-tracker)"
     })
     return s
 
@@ -111,30 +110,40 @@ def _post_txn(s: requests.Session, payload: Dict) -> Dict:
         r.raise_for_status()
     return r.json() or {}
 
-def _get_detail(s: requests.Session, award_internal_id: str) -> Optional[Dict]:
-    time.sleep(0.02 + random.random() * 0.03)  # tiny jitter
-    r = s.get(DETAIL_API.format(award_id=award_internal_id), timeout=TIMEOUT)
-    if r.status_code != 200:
-        return None
-    return r.json() or None
+def _get_detail(s: requests.Session, award_internal_id: str, tries: int = 4, sleep_base: float = 0.09) -> Dict:
+    """Fetch award detail with light client-side retries. Always returns a dict (possibly empty)."""
+    for attempt in range(tries):
+        try:
+            time.sleep(sleep_base * (attempt + 1) + random.random() * 0.05)
+            r = s.get(DETAIL_API.format(award_id=award_internal_id), timeout=TIMEOUT)
+            if r.status_code == 200:
+                return r.json() or {}
+            if r.status_code in (429, 500, 502, 503, 504):
+                continue
+            return {}
+        except requests.exceptions.RequestException:
+            if attempt < tries - 1:
+                continue
+            return {}
+    return {}
 
-def fetch(days: int = 90) -> pd.DataFrame:
+def fetch(days: int = 90, max_pages: Optional[int] = None, do_detail: bool = True) -> pd.DataFrame:
     s = make_session()
     start, end = date_window(days)
     page = 1
     rows: List[Dict] = []
     printed_cols = False
 
-    # 1) Pull transactions at HHS (no subtier filter here; we’ll use details later)
+    # 1) Pull transactions FOR NIH DIRECTLY (Awarding + SUBTIER)
     while True:
         payload = {
             "fields": TXN_FIELDS,
             "filters": {
                 "time_period": [{"start_date": start, "end_date": end}],
                 "agencies": [
-                    {"type": "awarding", "tier": "toptier", "name": "Department of Health and Human Services"},
+                    {"type": "awarding", "tier": "subtier", "name": "National Institutes of Health"},
                 ],
-                "award_type_codes": ["A", "B", "C", "D"],  # include IDVs as txn endpoint tolerates better
+                "award_type_codes": ["A", "B", "C", "D"],  # Contracts & IDVs
             },
             "page": page,
             "limit": PAGE_LIMIT,
@@ -144,7 +153,7 @@ def fetch(days: int = 90) -> pd.DataFrame:
         data = _post_txn(s, payload)
         results = data.get("results", []) or []
         if results and not printed_cols:
-            print("Txn search returned columns:", sorted(list(results[0].keys())))
+            print("Txn columns:", sorted(list(results[0].keys())))
             printed_cols = True
         rows.extend(results)
 
@@ -152,84 +161,117 @@ def fetch(days: int = 90) -> pd.DataFrame:
         if not meta.get("hasNext") or not results:
             break
         page += 1
-        time.sleep(0.07)
+        if max_pages and page > max_pages:
+            break
+        time.sleep(0.05)
 
     if not rows:
+        print("No NIH transactions found in window.")
         return pd.DataFrame(columns=COLS_OUT)
 
     df = pd.DataFrame(rows)
-    # Keep only fields we asked for
     present = [c for c in TXN_FIELDS if c in df.columns]
     df = df[present].copy()
-    # Rename to friendly names
     df.rename(columns=FRIENDLY_TXN, inplace=True)
 
-    # 2) Enrich each transaction’s award with details; filter to NIH
+    # Base columns we already have from the txn query
+    base = pd.DataFrame({
+        "Award Id": df.get("Award Id", pd.Series(dtype=object)),
+        "Recipient Name": df.get("Recipient Name", pd.Series(dtype=object)),
+        "Action Date": pd.to_datetime(df.get("Action Date", pd.Series(dtype=object)), errors="coerce"),
+        "Award Amount": df.get("Award Amount", pd.Series(dtype=float)),
+        "Piid": pd.Series([""] * len(df)),
+        "Place Of Performance State Code": df.get("Place Of Performance State Code", pd.Series(dtype=object)),
+        "Place Of Performance City Name": pd.Series([""] * len(df)),
+        "Place Of Performance ZIP Code": pd.Series([""] * len(df)),
+        "Place Of Performance County Name": pd.Series([""] * len(df)),
+        "Product Or Service Code (Psc)": df.get("Product Or Service Code (Psc)", pd.Series(dtype=object)),
+        "Psc Description": df.get("Psc Description", pd.Series(dtype=object)),
+        "Naics Code": df.get("Naics Code", pd.Series(dtype=object)),
+        "Naics Description": df.get("Naics Description", pd.Series(dtype=object)),
+        "Type Of Set Aside": pd.Series([""] * len(df)),
+        "Type Of Set Aside Description": pd.Series([""] * len(df)),
+        "Contracting Officer Business Size Determination": pd.Series([""] * len(df)),
+        "Last Modified Date": pd.Series([""] * len(df)),
+        "Is Small Business": pd.Series([False] * len(df)),
+        "Is 8a Set-Aside": pd.Series([False] * len(df)),
+    })
+
+    if not do_detail:
+        # FAST PATH: no detail calls. Enough for map/chart/table.
+        return base[COLS_OUT]
+
+    # 2) Enrich with detail (only NIH rows) — use generated_internal_id else internal_id else Award Id
+    gen_ids = df.get("generated_internal_id")
+    int_ids = df.get("internal_id")
+    awd_ids = df.get("Award Id")  # final fallback; sometimes acceptable
+
+    ids: List[Optional[str]] = []
+    for i in range(len(df)):
+        gid = None if gen_ids is None else gen_ids.iloc[i]
+        iid = None if   int_ids is None else int_ids.iloc[i]
+        aid = None if   awd_ids is None else awd_ids.iloc[i]
+        ids.append(str(gid or iid or aid or ""))
+
     add = {
         "Piid": [],
-        "Place Of Performance State Code": [],
+        "Place Of Performance City Name": [],
+        "Place Of Performance ZIP Code": [],
+        "Place Of Performance County Name": [],
         "Type Of Set Aside": [],
         "Type Of Set Aside Description": [],
         "Contracting Officer Business Size Determination": [],
         "Last Modified Date": [],
-        "_awarding_subtier_name": [],
     }
 
-    internal_ids: List[Optional[str]] = df.get("internal_id", pd.Series([None]*len(df))).tolist()
-
     with make_session() as s2:
-        for i, aid in enumerate(internal_ids, 1):
-            det = _get_detail(s2, aid) if aid else None
-            if det is None:
-                det = {}
+        for i, award_id in enumerate(ids, 1):
+            det = _get_detail(s2, award_id) if award_id else {}
+
+            pop = det.get("place_of_performance") or {}
+
+            pop_city  = det.get("pop_city_name")  or pop.get("city_name")  or ""
+            pop_zip_raw = det.get("pop_zip5")     or pop.get("location_zip5") or pop.get("zip5") \
+                        or det.get("pop_zip4")     or pop.get("zip4") or ""
+            pop_zip5 = str(pop_zip_raw)[:5] if pop_zip_raw else ""
+            pop_county = det.get("pop_county_name") or pop.get("county_name") or ""
+
             add["Piid"].append(det.get("piid") or "")
-            add["Place Of Performance State Code"].append(det.get("pop_state_code") or "")
+            add["Place Of Performance City Name"].append(pop_city)
+            add["Place Of Performance ZIP Code"].append(pop_zip5)
+            add["Place Of Performance County Name"].append(pop_county)
             add["Type Of Set Aside"].append(det.get("type_set_aside") or "")
             add["Type Of Set Aside Description"].append(det.get("type_set_aside_description") or "")
             add["Contracting Officer Business Size Determination"].append(
                 det.get("contracting_officers_determination_of_business_size") or ""
             )
             add["Last Modified Date"].append(det.get("last_modified_date") or "")
-            awarding_agency = det.get("awarding_agency") or {}
-            add["_awarding_subtier_name"].append((awarding_agency.get("subtier_name") or "").strip())
+
             if i % 200 == 0:
-                time.sleep(0.4)
+                time.sleep(0.35)
 
     for k, v in add.items():
-        df[k] = v
+        base[k] = v
 
-    # 3) Filter to NIH (awarding subtier)
-    df = df[df["_awarding_subtier_name"].str.upper().eq("NATIONAL INSTITUTES OF HEALTH")].copy()
-    df.drop(columns=["_awarding_subtier_name"], inplace=True, errors="ignore")
-
-    # 4) Parse dates & finalize columns
-    if "Action Date" in df.columns:
-        df["Action Date"] = pd.to_datetime(df["Action Date"], errors="coerce")
-
-    # Flags for your UI
+    # Flags for UI
     def _is_small_business(x: str) -> bool:
         return isinstance(x, str) and x.strip().upper() == "SMALL BUSINESS"
     def _is_8a(x: str) -> bool:
         return isinstance(x, str) and "8(A" in x.upper()
 
-    df["Is Small Business"] = df["Contracting Officer Business Size Determination"].apply(_is_small_business)
-    df["Is 8a Set-Aside"] = (
-        df["Type Of Set Aside Description"].apply(_is_8a) |
-        df["Type Of Set Aside"].apply(_is_8a)
+    base["Is Small Business"] = base["Contracting Officer Business Size Determination"].apply(_is_small_business)
+    base["Is 8a Set-Aside"] = (
+        base["Type Of Set Aside Description"].apply(_is_8a) |
+        base["Type Of Set Aside"].apply(_is_8a)
     )
 
-    # Ensure expected columns exist
-    for col in COLS_OUT:
-        if col not in df.columns:
-            df[col] = ""
-    # Some txn pulls won’t include PSC/NAICS; keep any values we did get
-    return df[COLS_OUT]
+    return base[COLS_OUT]
 
-def main(days: int = 90, outdir: str = "data") -> None:
+def main(days: int = 90, outdir: str = "data", max_pages: Optional[int] = None, no_detail: bool = False) -> None:
     out_dir = pathlib.Path(outdir); out_dir.mkdir(parents=True, exist_ok=True)
-    df = fetch(days=days)
+    df = fetch(days=days, max_pages=max_pages, do_detail=not no_detail)
 
-    csv_path = out_dir / f"nih_awards_last_{days}d.csv"
+    csv_path  = out_dir / f"nih_awards_last_{days}d.csv"
     json_path = out_dir / f"nih_awards_last_{days}d.json"
     df.to_csv(csv_path, index=False)
     df.to_json(json_path, orient="records")
@@ -240,15 +282,17 @@ def main(days: int = 90, outdir: str = "data") -> None:
         agg.to_csv(out_dir / f"nih_top_recipients_last_{days}d.csv", index=False)
         print(f"Saved {len(df)} transactions across {agg.shape[0]} recipients.")
     else:
-        print("Saved 0 transactions (after NIH filter).")
+        print("Saved 0 transactions (NIH, window).")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--outdir", type=str, default="data")
+    ap.add_argument("--max-pages", type=int, default=None, help="Cap number of pages for testing")
+    ap.add_argument("--no-detail", action="store_true", help="Skip /awards/{id} enrichment for speed")
     args = ap.parse_args()
     try:
-        main(days=args.days, outdir=args.outdir)
+        main(days=args.days, outdir=args.outdir, max_pages=args.max_pages, no_detail=args.no_detail)
     except Exception as e:
         print("ERROR:", e)
         sys.exit(1)
