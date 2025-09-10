@@ -1,12 +1,19 @@
-/* NIH Awards Tracker – app.js (ZIP-centroids only)
+/* NIH Awards Tracker – app.js (clean, consolidated)
  * - Top recipients (All vs SB/8(a))
- * - US map with PSC/NAICS filters + per-state drilldown
- * - Toggleable recipient points by ZIP (uses data/zip_centroids.json)
- * - Recent awards table + aggregated awardees
+ * - US choropleth + state drilldown (county outlines + recipient points)
+ * - Recent awards table:
+ *     • Collapsible section
+ *     • Sortable headers
+ *     • NAICS filter (client-side)
+ *     • “Show more rows” paged rendering
+ * - Robust header normalization for CSVs
  */
 
-const DEBUG = true;
+/* ================= config & helpers ================= */
+
+const DEBUG = false;
 const debug = (m, ...rest) => { if (DEBUG) console.log(m, ...rest); };
+
 const bust = () => `?t=${Date.now()}`;
 
 // Base URL from Jekyll; ignore it in Codespaces/local dev
@@ -23,6 +30,9 @@ const TOP_RECIP_URL        = (U.TOP_RECIP        || `${DATA_DIR}/nih_top_recipie
 const TOP_RECIP_ENRICH_URL = (U.TOP_RECIP_ENRICH || `${DATA_DIR}/nih_top_recipients_last_90d_enriched.csv`) + bust();
 const ZIP_CENTROIDS_URL    = `${DATA_DIR}/zip_centroids.json${bust()}`;
 
+// expose a quick selector
+const $ = (id) => document.getElementById(id);
+
 const fmtUSD = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
     .format(+n || 0);
@@ -33,22 +43,30 @@ const toNum = (v) =>
 const careersUrl = (name) =>
   `https://www.google.com/search?q=${encodeURIComponent(`${name} careers jobs`)}`;
 
-const $ = (id) => document.getElementById(id);
-
-/* ===== ZIP centroids (precomputed) ===== */
-let ZIPS = null;
-async function loadZipCentroids() {
-  if (ZIPS) return ZIPS;
-  try {
-    const res = await fetch(ZIP_CENTROIDS_URL, { cache: "no-store" });
-    if (!res.ok) throw new Error(res.status);
-    ZIPS = await res.json();
-    debug(`zip_centroids loaded: ${Object.keys(ZIPS).length} ZIPs`);
-  } catch (e) {
-    console.warn("zip_centroids.json not found or failed to load. Points disabled.", e);
-    ZIPS = {};
-  }
-  return ZIPS;
+/* ---- Top recipients: detect SB/8(a) from text ---- */
+const SB_PATTERNS = [
+  /8\(?a\)?/i,
+  /small\s*business/i,
+  /\bSBA\b/i, /\bSDB\b/i,
+  /women[-\s]?owned/i, /\bWOSB\b|\bEDWOSB\b/i,
+  /\bHUBZone\b/i,
+  /service[-\s]?disabled/i, /veteran/i,
+];
+function isSmallBusinessSetAside(text) {
+  if (!text) return false;
+  const s = String(text);
+  return SB_PATTERNS.some((rx) => rx.test(s));
+}
+function getSetAsideFromRow(_orig, lowerRow) {
+  const candidates = [
+    "type of set aside",
+    "type_of_set_aside",
+    "contracting officer business size determination",
+    "business size",
+  ];
+  for (const k of candidates) if (k in lowerRow) return lowerRow[k];
+  const loose = Object.keys(lowerRow).find((k) => /set.?aside|business.*size/.test(k));
+  return loose ? lowerRow[loose] : null;
 }
 
 /* ================= CSV loading ================= */
@@ -59,7 +77,7 @@ async function loadCSV(url) {
   if (!res.ok) throw new Error(`Fetch failed ${res.status} ${url}`);
   const text = await res.text();
   return new Promise((resolve) =>
-    Papa.parse(text, { header: true, dynamicTyping: true, complete: (r) => resolve(r.data) })
+    Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true, complete: (r) => resolve(r.data) })
   );
 }
 
@@ -69,35 +87,7 @@ async function loadRecipientsOrFallback() {
   return null;
 }
 
-/* ================= SB/8(a) detection ================= */
-
-const SB_PATTERNS = [
-  /8\(?a\)?/i,
-  /small\s*business/i,
-  /\bSBA\b/i, /\bSDB\b/i,
-  /women[-\s]?owned/i, /\bWOSB\b|\bEDWOSB\b/i,
-  /\bHUBZone\b/i,
-  /service[-\s]?disabled/i, /veteran/i,
-];
-
-function getSetAsideFromRow(_orig, lowerRow) {
-  const candidates = [
-    "type of set aside",
-    "contracting officer business size determination",
-    "business size",
-  ];
-  for (const k of candidates) if (k in lowerRow) return lowerRow[k];
-  const loose = Object.keys(lowerRow).find((k) => /set.?aside|business.*size/.test(k));
-  return loose ? lowerRow[loose] : null;
-}
-
-function isSmallBusinessSetAside(text) {
-  if (!text) return false;
-  const s = String(text);
-  return SB_PATTERNS.some((rx) => rx.test(s));
-}
-
-/* ================= normalization ================= */
+/* ================= normalization helpers ================= */
 
 function normalizeAwardRow(row) {
   // lowercase-keyed copy to match title-case headers
@@ -107,7 +97,7 @@ function normalizeAwardRow(row) {
   const action_date = lower["action date"] ?? lower["action_date"] ?? lower["actiondate"] ?? null;
   const recipient   = (lower["recipient name"] ?? lower["recipient_name"] ?? "").trim();
   const amount      = toNum(lower["award amount"] ?? lower["transaction amount"] ?? lower["award_amount"]);
-  const piid        = lower["piid"] ?? lower["piid "] ?? null;
+  const piid        = lower["piid"] ?? lower["piid "] ?? null; // tolerate odd spaces
 
   const stateCode   = (lower["place of performance state code"] ??
                        lower["primary place of performance state code"] ?? "")
@@ -115,7 +105,6 @@ function normalizeAwardRow(row) {
   const stateName   = lower["place of performance state name"] ??
                       lower["primary place of performance"] ?? "";
 
-  // city + zip from CSV
   const city   = lower["place of performance city name"] ??
                  lower["primary place of performance city name"] ?? "";
   const zipRaw = lower["place of performance zip code"] ??
@@ -123,7 +112,7 @@ function normalizeAwardRow(row) {
                  lower["place of performance zip code (+4)"] ?? "";
   const zip5   = String(zipRaw).slice(0, 5);
 
-  // coords: if CSV already contains them (optional)
+  // If CSV has these (optional), use them; else null (we attach from ZIP centroids for map)
   const lat = lower["latitude"]  != null ? +lower["latitude"]  : null;
   const lon = lower["longitude"] != null ? +lower["longitude"] : null;
 
@@ -144,7 +133,8 @@ function normalizeAwardRow(row) {
     state_name: stateName,
     pop_city: city,
     pop_zip5: zip5,
-    lat, lon,
+    lat,
+    lon,
     psc,
     psc_desc: pscDesc,
     naics,
@@ -161,7 +151,6 @@ function passesCodeFilters(r, pscPrefix, naicsPrefix) {
   const naicsOk = !n || (r.naics && String(r.naics).startsWith(n));
   return pscOk && naicsOk;
 }
-
 function aggregateByState(awards, metric, pscPrefix, naicsPrefix) {
   const by = {};
   for (const r of awards) {
@@ -173,7 +162,6 @@ function aggregateByState(awards, metric, pscPrefix, naicsPrefix) {
   }
   return by;
 }
-
 function topRecipientsForState(awards, stateCode, pscPrefix, naicsPrefix, limit = 100) {
   const by = {};
   for (const r of awards) {
@@ -200,16 +188,6 @@ const US_ATLAS_COUNTIES = "https://cdn.jsdelivr.net/npm/us-atlas@3/counties-10m.
 let _statesTopo = null, _countiesTopo = null;
 let _statesGeo  = null, _countiesGeo  = null;
 
-// Map state postal -> FIPS (2-digit)
-const STATE_FIPS = {
-  AL:"01", AK:"02", AZ:"04", AR:"05", CA:"06", CO:"08", CT:"09", DE:"10", FL:"12",
-  GA:"13", HI:"15", ID:"16", IL:"17", IN:"18", IA:"19", KS:"20", KY:"21", LA:"22",
-  ME:"23", MD:"24", MA:"25", MI:"26", MN:"27", MS:"28", MO:"29", MT:"30", NE:"31",
-  NV:"32", NH:"33", NJ:"34", NM:"35", NY:"36", NC:"37", ND:"38", OH:"39", OK:"40",
-  OR:"41", PA:"42", RI:"44", SC:"45", SD:"46", TN:"47", TX:"48", UT:"49", VT:"50",
-  VA:"51", WA:"53", WV:"54", WI:"55", WY:"56", DC:"11"
-};
-
 async function ensureTopo() {
   if (typeof topojson === "undefined") {
     console.error("topojson-client not loaded. Include it before app.js.");
@@ -221,77 +199,42 @@ async function ensureTopo() {
   if (!_countiesGeo)  _countiesGeo  = topojson.feature(_countiesTopo, _countiesTopo.objects.counties);
 }
 
-// track current state & points trace
+// Map state postal -> FIPS (2-digit)
+const STATE_FIPS = {
+  AL:"01", AK:"02", AZ:"04", AR:"05", CA:"06", CO:"08", CT:"09", DE:"10", FL:"12",
+  GA:"13", HI:"15", ID:"16", IL:"17", IN:"18", IA:"19", KS:"20", KY:"21", LA:"22",
+  ME:"23", MD:"24", MA:"25", MI:"26", MN:"27", MS:"28", MO:"29", MT:"30", NE:"31",
+  NV:"32", NH:"33", NJ:"34", NM:"35", NY:"36", NC:"37", ND:"38", OH:"39", OK:"40",
+  OR:"41", PA:"42", RI:"44", SC:"45", SD:"46", TN:"47", TX:"48", UT:"49", VT:"50",
+  VA:"51", WA:"53", WV:"54", WI:"55", WY:"56", DC:"11"
+};
+
+// Precomputed ZIP centroids (no live geocoding)
+let ZIPS = null;
+async function loadZipCentroids() {
+  if (ZIPS) return ZIPS;
+  try {
+    const res = await fetch(ZIP_CENTROIDS_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    ZIPS = await res.json();
+  } catch (e) {
+    console.warn("zip_centroids.json not found or failed to load. Points disabled.", e);
+    ZIPS = {};
+  }
+  return ZIPS;
+}
+
+// Track map UI state
+if (typeof window.MAP_MODE === "undefined") window.MAP_MODE = "us";
 let POINT_TRACE_ID = null;
-let CURRENT_STATE  = null;
-
-// sqrt marker sizing by amount
-function sizeScale(values, min=6, max=28) {
-  const vmax = Math.max(...values, 1);
-  const k = (max - min) / Math.sqrt(vmax);
-  return (x) => min + k * Math.sqrt(x || 0);
-}
-
-// Build a points trace for the selected state using ZIP centroids
-function buildStatePointTrace(stateCode, awardsAll, pscPrefix, naicsPrefix) {
-  if (!ZIPS) return null;
-
-  // Aggregate by ZIP + Recipient for nicer bubbles
-  const by = {};
-  for (const r of awardsAll) {
-    if (r.state !== stateCode) continue;
-    if ((+r.award_amount || 0) <= 0) continue;
-    if (!passesCodeFilters(r, pscPrefix, naicsPrefix)) continue;
-
-    const zip = String(r.pop_zip5 || "").slice(0,5);
-    if (!zip || !ZIPS[zip]) continue;
-
-    const key = `${zip}__${r.recipient_name || ""}`;
-    if (!by[key]) by[key] = { zip, name: r.recipient_name || "", amount: 0, count: 0 };
-    by[key].amount += (+r.award_amount || 0);
-    by[key].count  += 1;
-  }
-
-  const pts = Object.values(by);
-  if (!pts.length) return null;
-
-  const amounts = pts.map(p => p.amount);
-  const S = sizeScale(amounts);
-
-  const lat = [], lon = [], size = [], text = [];
-  for (const p of pts) {
-    const c = ZIPS[p.zip];
-    if (!c || c.lat == null || c.lon == null) continue;
-    lat.push(c.lat); lon.push(c.lon);
-    size.push(S(p.amount));
-    text.push(`<b>${p.name}</b><br>${fmtUSD(p.amount)} · ${p.count} award(s)<br>${p.zip}`);
-  }
-  if (!lat.length) return null;
-
-  return {
-    type: "scattergeo",
-    mode: "markers",
-    lat, lon,
-    text,
-    hovertemplate: "%{text}<extra></extra>",
-    marker: { size, opacity: 0.85, line: { width: 0.5, color: "#333" } },
-    name: "Recipients",
-    showlegend: false
-  };
-}
 
 /* ================= state drilldown renderer ================= */
 
 async function drawStateDrilldown(stateCode, awardsAll) {
   await ensureTopo();
-  await loadZipCentroids();
   const fips = STATE_FIPS[stateCode];
   if (!fips || !_statesGeo || !_countiesGeo) return;
 
-  CURRENT_STATE  = stateCode;
-  POINT_TRACE_ID = null;
-
-  // --- outline layers ---
   const stateFeat = _statesGeo.features.find(f => String(f.id).padStart(2, "0") === fips);
   const counties  = _countiesGeo.features.filter(f => String(f.id).padStart(5,"0").slice(0,2) === fips);
 
@@ -329,6 +272,51 @@ async function drawStateDrilldown(stateCode, awardsAll) {
     showlegend: false
   }, { displayModeBar:false });
 
+  // Gather rows for this state with positive amounts
+  const pscPrefix   = (document.getElementById("pscFilter")?.value || "").trim();
+  const naicsPrefix = (document.getElementById("naicsFilter")?.value || "").trim();
+
+  const inState = awardsAll.filter(r =>
+    r.state === stateCode && (+r.award_amount || 0) > 0 && passesCodeFilters(r, pscPrefix, naicsPrefix)
+  );
+
+  await loadZipCentroids();
+
+  // Attach coords from precomputed ZIPs if needed
+  const rows = inState.map(r => {
+    const zip = String(r.pop_zip5 || "").slice(0, 5);
+    const z   = zip && ZIPS[zip] ? ZIPS[zip] : null;
+    return {
+      ...r,
+      lat: r.lat ?? (z ? z.lat : null),
+      lon: r.lon ?? (z ? z.lon : null)
+    };
+  });
+
+  // Build marker arrays
+  const pts  = rows.filter(r => r.lat != null && r.lon != null);
+  const lat  = pts.map(r => r.lat);
+  const lon  = pts.map(r => r.lon);
+  const text = pts.map(r =>
+    `<b>${r.recipient_name || "Unknown"}</b><br>${r.pop_city || ""}${r.pop_zip5 ? " " + r.pop_zip5 : ""}<br>${fmtUSD(r.award_amount)}`
+  );
+
+  debug(`[${stateCode}] rows: ${inState.length}  with coords: ${pts.length}`);
+
+  POINT_TRACE_ID = null;
+  if (lat.length) {
+    Plotly.addTraces("map", [{
+      type: "scattergeo",
+      mode: "markers",
+      lat, lon,
+      text,
+      hovertemplate: "%{text}<extra></extra>",
+      marker: { size: 8, opacity: 0.85, line: { width: 0.5, color: "#333" } },
+      name: "Recipients",
+      showlegend: false
+    }]).then((inds) => { POINT_TRACE_ID = inds && inds[0]; });
+  }
+
   // UI state
   window.MAP_MODE = "state";
   const backBtn = $("backToUS");
@@ -336,11 +324,106 @@ async function drawStateDrilldown(stateCode, awardsAll) {
 
   const toggleBtn = $("togglePoints");
   if (toggleBtn) {
-    toggleBtn.style.display = "inline-block";
-    toggleBtn.textContent = "Show recipient points";
+    toggleBtn.style.display = lat.length ? "inline-block" : "none";
+    toggleBtn.textContent = "Hide recipient points";
   }
+}
 
-  debug(`Drilled into ${stateCode}`);
+/* ================= Recent awards (table) – state & helpers ================= */
+
+// Global table state (single declarations)
+let awards = [];                 // all normalized rows
+let awardsFiltered = [];         // filtered subset
+let awardsSlice = 50;            // default page size
+let awardsFilter = { naics: "", psc: "", text: "" };
+let awardsSort   = { key: "action_date", dir: "desc" };
+
+function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+function parseDateLoose(s) { const d = new Date(s); return isNaN(d) ? null : d; }
+
+function sortRows(rows) {
+  const { key, dir } = awardsSort;
+  const mult = dir === "desc" ? -1 : 1;
+  return rows.slice().sort((a, b) => {
+    if (key === "award_amount") return mult * (toNum(a.award_amount) - toNum(b.award_amount));
+    if (key === "action_date") {
+      const da = parseDateLoose(a.action_date) || new Date(0);
+      const db = parseDateLoose(b.action_date) || new Date(0);
+      return mult * (da - db);
+    }
+    // string fields
+    const sa = String(a[key] ?? "").toLowerCase();
+    const sb = String(b[key] ?? "").toLowerCase();
+    return mult * cmp(sa, sb);
+  });
+}
+
+function applyAwardsFiltersAndRender() {
+  awardsFiltered = awards.filter(r => {
+    const okNaics = !awardsFilter.naics || String(r.naics || "").startsWith(awardsFilter.naics);
+    const okPsc   = !awardsFilter.psc   || String(r.psc   || "").toUpperCase().startsWith(awardsFilter.psc.toUpperCase());
+    const okText  = !awardsFilter.text  || String(r.recipient_name || "").toLowerCase().includes(awardsFilter.text.toLowerCase());
+    return okNaics && okPsc && okText;
+  });
+  awardsSlice = Math.min(awardsSlice, awardsFiltered.length || 0);
+  renderAwardsTable();
+}
+
+function renderAwardsTable() {
+  const thead = document.querySelector("#awardsTable thead");
+  const tbody = document.querySelector("#awardsTable tbody");
+  if (!thead || !tbody) return;
+
+  thead.innerHTML = `
+    <tr>
+      <th data-key="action_date"   class="sortable">Action Date</th>
+      <th data-key="recipient_name" class="sortable">Recipient Name</th>
+      <th data-key="award_amount"   class="sortable">Award Amount</th>
+      <th data-key="piid"           class="sortable">PIID</th>
+      <th data-key="set_aside"      class="sortable">Type of Set Aside / Size</th>
+      <th data-key="psc"            class="sortable">PSC</th>
+      <th data-key="naics"          class="sortable">NAICS</th>
+      <th>Careers</th>
+    </tr>`;
+
+  // header sort indicators + click handlers
+  thead.querySelectorAll("th.sortable").forEach(th => {
+    const k = th.dataset.key;
+    const active = (awardsSort.key === k);
+    th.style.cursor = "pointer";
+    th.textContent = th.textContent.replace(/[▲▼]$/, "");
+    if (active) {
+      th.textContent += awardsSort.dir === "asc" ? " ▲" : " ▼";
+    }
+    th.onclick = () => {
+      if (awardsSort.key === k) {
+        awardsSort.dir = (awardsSort.dir === "asc" ? "desc" : "asc");
+      } else {
+        awardsSort.key = k;
+        awardsSort.dir = (k === "award_amount" || k === "action_date") ? "desc" : "asc";
+      }
+      renderAwardsTable();
+    };
+  });
+
+  const rows = sortRows(awardsFiltered).slice(0, awardsSlice);
+
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td>${r.action_date ?? ""}</td>
+      <td>${r.recipient_name ?? ""}</td>
+      <td>${fmtUSD(r.award_amount)}</td>
+      <td>${r.piid ?? ""}</td>
+      <td>${r.set_aside ?? ""}</td>
+      <td>${r.psc ?? ""}</td>
+      <td>${r.naics ?? ""}</td>
+      <td><a href="${careersUrl(r.recipient_name || "")}" target="_blank" rel="noopener">Search jobs</a></td>
+    </tr>
+  `).join("");
+
+  const summary = $("summary");
+  if (summary) summary.textContent =
+    `Rows shown: ${Math.min(awardsSlice, awardsFiltered.length)} of ${awardsFiltered.length}`;
 }
 
 /* ================= main ================= */
@@ -357,51 +440,15 @@ async function render() {
   debug("TOP_RECIP_ENRICH_URL:", TOP_RECIP_ENRICH_URL);
   debug("awardsRaw length:", awardsRaw.length, "recipsMaybe length:", recipsMaybe ? recipsMaybe.length : null);
 
+  // Normalize and initialize global table state
   const awardsAllRows = awardsRaw.map(normalizeAwardRow);
-  const awards        = awardsAllRows; // all rows for tables/side list
-  const awardsPos     = awardsAllRows.filter(r => (+r.award_amount || 0) > 0); // positive amounts for maps
+  awards = awardsAllRows;                      // all rows for tables/side list
+  awardsFiltered = awards.slice();             // start unfiltered
+  awardsSlice = Math.min(awardsSlice, awardsFiltered.length || 0);
 
-    // Expose for helpers
-  window._awards = awards;
+  const awardsPos = awardsAllRows.filter(r => (+r.award_amount || 0) > 0); // positive amounts for charts/maps
 
-  // initialize filter state and first render
-  awardsFiltered = awards.slice();
-  renderAwardsTable();
-
-  // NAICS filter events
-  if (awardsNaicsInput) {
-    awardsNaicsInput.addEventListener("input", debounce((e) => {
-      awardsFilter.naics = (e.target.value || "").trim();
-      applyAwardsFiltersAndRender();
-    }));
-  }
-  if (awardsNaicsClear) {
-    awardsNaicsClear.addEventListener("click", () => {
-      awardsFilter.naics = "";
-      if (awardsNaicsInput) awardsNaicsInput.value = "";
-      applyAwardsFiltersAndRender();
-    });
-  }
-
-  // "Show more rows" still works, but respects filters
-  const showMoreBtn = $("showMore");
-  if (showMoreBtn) {
-    showMoreBtn.addEventListener("click", () => {
-      awardsSlice = Math.min(awardsSlice + 1000, awardsFiltered.length);
-      renderAwardsTable();
-      if (awardsSlice >= awardsFiltered.length) showMoreBtn.disabled = true;
-    });
-  }
-
-  // Optional: collapse behavior
-  const awardsPanel = $("awardsPanel");
-  if (awardsPanel) {
-    awardsPanel.addEventListener("toggle", () => {
-      if (awardsPanel.open) renderAwardsTable();
-    });
-  }
-
-  // expose for console debugging
+  // Expose for console debugging
   window._awards = awards;
   window._awardsPos = awardsPos;
 
@@ -542,10 +589,9 @@ async function render() {
         const loc = ev.points?.[0]?.location; // e.g., "MD"
         if (!loc) return;
 
-        // Update side list
+        // Update side list (use all awards so counts match the raw table)
         const top = topRecipientsForState(awards, loc, pscPrefix, naicsPrefix, 200);
         $("stateTitle").textContent = `Recipients in ${loc}`;
-        CURRENT_STATE = loc;
 
         if (!top.length) {
           $("stateList").innerHTML = "<li class='muted'>No recipients for current filters.</li>";
@@ -563,32 +609,33 @@ async function render() {
           `).join("");
         }
 
-        // Render state base map (points are toggled separately)
+        // Drill into state map (+ points)
         drawStateDrilldown(loc, awardsPos);
       });
     }
 
-    // Reset controls for national view
+    // Reset back button (national view)
     window.MAP_MODE = "us";
     const backBtn = $("backToUS");
     if (backBtn) backBtn.style.display = "none";
-    const toggleBtn = $("togglePoints");
-    if (toggleBtn) toggleBtn.style.display = "none";
     POINT_TRACE_ID = null;
-    CURRENT_STATE  = null;
   }
 
   drawUSMap();
 
   $("applyFilters")?.addEventListener("click", () => {
-    if (window.MAP_MODE === "state" && CURRENT_STATE) {
-      drawStateDrilldown(CURRENT_STATE, awardsPos);
-      // side list will update only on next state click; that's fine for now
-      return;
+    // If in state view, re-render the state to respect new filters
+    if (window.MAP_MODE === "state") {
+      const title = $("stateTitle")?.textContent || "";
+      const m = title.match(/Recipients in ([A-Z]{2})$/);
+      const st = m ? m[1] : null;
+      if (st) {
+        drawStateDrilldown(st, awardsPos);
+        return;
+      }
     }
     drawUSMap();
   });
-
   $("aggMetric")?.addEventListener("change", drawUSMap);
 
   $("clearSelection")?.addEventListener("click", () => {
@@ -608,137 +655,68 @@ async function render() {
   $("backToUS")?.addEventListener("click", () => {
     window.MAP_MODE = "us";
     $("backToUS").style.display = "none";
-    const toggleBtn = $("togglePoints");
-    if (toggleBtn) toggleBtn.style.display = "none";
     $("stateTitle").textContent = "Click a state";
     $("stateSummary").textContent = "";
     $("stateList").innerHTML = "";
     drawUSMap();
   });
 
-  // Toggle recipient points
+  // Toggle recipient points (show/hide existing markers trace)
   $("togglePoints")?.addEventListener("click", async (ev) => {
     const gd = $("map");
-    if (!gd || window.MAP_MODE !== "state" || !CURRENT_STATE) return;
+    if (!gd || window.MAP_MODE !== "state") return;
 
-    // If we don't yet have a points trace, build and add it
-    if (POINT_TRACE_ID == null) {
-      const pscPrefix   = ($("pscFilter")?.value || "").trim();
-      const naicsPrefix = ($("naicsFilter")?.value || "").trim();
+    if (POINT_TRACE_ID == null) return; // no points yet
 
-      await loadZipCentroids();
-      const pts = buildStatePointTrace(CURRENT_STATE, awardsPos, pscPrefix, naicsPrefix);
-      if (!pts) { ev.currentTarget.textContent = "Show recipient points"; return; }
-
-      const inds = await Plotly.addTraces(gd, pts);
-      POINT_TRACE_ID = Array.isArray(inds) ? inds[0] : inds;
-      ev.currentTarget.textContent = "Hide recipient points";
-      return;
-    }
-
-    // Otherwise just toggle visibility
     const current = gd.data[POINT_TRACE_ID];
     const isHidden = current.visible === "legendonly" || current.visible === false;
     await Plotly.restyle(gd, { visible: isHidden ? true : "legendonly" }, POINT_TRACE_ID);
+
     ev.currentTarget.textContent = isHidden ? "Hide recipient points" : "Show recipient points";
   });
 
-  /* ----- Recent awards table (raw) ----- */
+  /* ----- Recent awards (table): filters + render + show more + collapse ----- */
 
-  const thead = document.querySelector("#awardsTable thead");
-  const tbody = document.querySelector("#awardsTable tbody");
+  // table initially renders from awardsFiltered already set above
+  renderAwardsTable();
 
-  /* Compact default: start with 50 rows */
-  let awardsSlice = 50;
-
-  /* Sorting state */
-  const HEADERS = [
-    { label: "Action Date", key: "action_date", type: "date" },
-    { label: "Recipient Name", key: "recipient_name", type: "text" },
-    { label: "Award Amount", key: "award_amount", type: "num" },
-    { label: "PIID", key: "piid", type: "text" },
-    { label: "Type of Set Aside / Size", key: "set_aside", type: "text" },
-    { label: "PSC", key: "psc", type: "text" },
-    { label: "NAICS", key: "naics", type: "text" },
-    { label: "Careers", key: null, type: "text" },
-  ];
-
-  let sortState = { key: "action_date", dir: "desc" };
-
-  function sortAwards(rows) {
-    const { key, dir } = sortState;
-    if (!key) return rows;
-
-    const type = HEADERS.find(h => h.key === key)?.type || "text";
-    const cmp = (a, b) => {
-      let va = a[key], vb = b[key];
-      if (type === "num") {
-        va = +va || 0; vb = +vb || 0;
-      } else if (type === "date") {
-        va = new Date(va).getTime() || 0;
-        vb = new Date(vb).getTime() || 0;
-      } else {
-        va = (va ?? "").toString().toUpperCase();
-        vb = (vb ?? "").toString().toUpperCase();
-      }
-      if (va < vb) return -1;
-      if (va > vb) return 1;
-      return 0;
-    };
-
-    const out = rows.slice().sort(cmp);
-    return dir === "desc" ? out.reverse() : out;
-  }
-
-  function renderHeader() {
-    if (!thead) return;
-    thead.innerHTML = `<tr>${
-      HEADERS.map(h => {
-        const isSorted = h.key && h.key === sortState.key;
-        const arrow = isSorted ? (sortState.dir === "asc" ? " ▲" : " ▼") : "";
-        const attrs = h.key ? `data-key="${h.key}" data-type="${h.type}"` : "";
-        return `<th ${attrs}>${h.label}${arrow}</th>`;
-      }).join("")
-    }</tr>`;
-
-    // click-to-sort
-    thead.onclick = (ev) => {
-      const th = ev.target.closest("th[data-key]");
-      if (!th) return;
-      const key = th.dataset.key;
-      sortState = {
-        key,
-        dir: sortState.key === key && sortState.dir === "asc" ? "desc" : "asc",
-      };
-      renderAwardsTable(); // re-render with new sort
-    };
-  }
-  // --- NAICS filter & sorting (Recent awards table) ---
-  const awardsNaicsInput = $("awardsNaics");
+  // NAICS filter controls (for the table)
+  const awardsNaicsInput = $("awardsNaicsInput");
   const awardsNaicsClear = $("awardsNaicsClear");
-  let awardsFiltered = [];                    // filtered rows to display
-  const awardsFilter = { naics: "" };
+  const debounce = (fn, ms = 250) => {
+    let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+  };
 
-  /* ----- Recent awardees (aggregated recipients) ----- */
+  if (awardsNaicsInput) {
+    awardsNaicsInput.addEventListener("input", debounce((e) => {
+      awardsFilter.naics = (e.target.value || "").trim();
+      applyAwardsFiltersAndRender();
+    }));
+  }
+  if (awardsNaicsClear) {
+    awardsNaicsClear.addEventListener("click", () => {
+      awardsFilter.naics = "";
+      if (awardsNaicsInput) awardsNaicsInput.value = "";
+      applyAwardsFiltersAndRender();
+    });
+  }
 
-  const awHead = document.querySelector('#awardeesTable thead');
-  const awBody = document.querySelector('#awardeesTable tbody');
+  // “Show more rows” (respects current filters)
+  const showMoreBtn = $("showMore");
+  if (showMoreBtn) {
+    showMoreBtn.addEventListener("click", () => {
+      awardsSlice = Math.min(awardsSlice + 200, awardsFiltered.length);
+      renderAwardsTable();
+      if (awardsSlice >= awardsFiltered.length) showMoreBtn.disabled = true;
+    });
+  }
 
-  if (awHead && awBody) {
-    awHead.innerHTML = `<tr><th>Recipient</th><th>Total Obligated</th></tr>`;
-
-    function renderAwardeesTable(N = 200) {
-      const rows = recipsAll.slice().sort((a,b) => b.amount - a.amount).slice(0, N);
-      awBody.innerHTML = rows.map(r =>
-        `<tr><td>${r.name}</td><td>${fmtUSD(r.amount)}</td></tr>`
-      ).join('');
-
-      const sum = rows.reduce((s,r) => s + (r.amount || 0), 0);
-      const info = $("awardeesSummary");
-      if (info) info.textContent = `Top ${rows.length} recipients · ${fmtUSD(sum)} total`;
-    }
-
-    renderAwardeesTable();
+  // Optional: collapsible panel for table (use <details id="awardsPanel"> in HTML)
+  const awardsPanel = $("awardsPanel");
+  if (awardsPanel) {
+    awardsPanel.addEventListener("toggle", () => {
+      if (awardsPanel.open) renderAwardsTable();
+    });
   }
 }
 
