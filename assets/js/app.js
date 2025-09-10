@@ -1,15 +1,14 @@
 /* NIH Awards Tracker – app.js
  * - Top recipients (All vs SB/8(a))
- * - US map with PSC/NAICS filters + per-state recipients
- * - State drill-down: outline + county borders + back button
- * - Recipient bubbles by ZIP (toggle on/off), using precomputed centroids
- * - Recent awards (raw table) w/ "Show more"
- * - Recent awardees (aggregated recipients)
+ * - US map w/ PSC & NAICS filters
+ * - State drill-down (outline + county borders) + recipient points by ZIP
+ * - Recent awards table + recent awardees table
+ * - Robust header normalization & defensive guards
  */
 
 /* ================= config & helpers ================= */
 
-const DEBUG = true;
+const DEBUG = false;
 const debug = (m, ...rest) => { if (DEBUG) console.log(m, ...rest); };
 
 const bust = () => `?t=${Date.now()}`;
@@ -27,10 +26,12 @@ const AWARDS_URL           = (U.AWARDS           || `${DATA_DIR}/nih_awards_last
 const TOP_RECIP_URL        = (U.TOP_RECIP        || `${DATA_DIR}/nih_top_recipients_last_90d.csv`)          + bust();
 const TOP_RECIP_ENRICH_URL = (U.TOP_RECIP_ENRICH || `${DATA_DIR}/nih_top_recipients_last_90d_enriched.csv`) + bust();
 const ZIP_CENTROIDS_URL    = `${DATA_DIR}/zip_centroids.json${bust()}`;
-window.AWARDS_URL = AWARDS_URL;
-window.TOP_RECIP_URL = TOP_RECIP_URL;
+
+// Expose for DevTools
+window.AWARDS_URL           = AWARDS_URL;
+window.TOP_RECIP_URL        = TOP_RECIP_URL;
 window.TOP_RECIP_ENRICH_URL = TOP_RECIP_ENRICH_URL;
-window.ZIP_CENTROIDS_URL = ZIP_CENTROIDS_URL;
+window.ZIP_CENTROIDS_URL    = ZIP_CENTROIDS_URL;
 
 const fmtUSD = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
@@ -44,21 +45,23 @@ const careersUrl = (name) =>
 
 const $ = (id) => document.getElementById(id);
 
-// Track drilldown state & current points trace
-if (typeof window.MAP_MODE === "undefined") window.MAP_MODE = "us"; // "us" | "state"
-let CURRENT_STATE = null;     // two-letter code of drilled state
-let POINT_TRACE_ID = null;    // Plotly trace index for markers
+// Global UI state (guarded so re-loading the file doesn’t redeclare)
+window.MAP_MODE       = window.MAP_MODE       ?? "us";   // "us" | "state"
+window.CURRENT_STATE  = window.CURRENT_STATE  ?? null;    // 2-letter postal
+window.POINT_TRACE_ID = window.POINT_TRACE_ID ?? null;    // Plotly trace index
 
-/* ================= ZIP centroids (precomputed) ================= */
+// Data bucket so helpers can access after render initializes it
+window.__DATA__ = window.__DATA__ || { awards: [], awardsPos: [], recipsAll: [] };
+const DATA = window.__DATA__;
 
+/* ---- Precomputed ZIP centroids (no live geocoding) ---- */
 let ZIPS = null;
 async function loadZipCentroids() {
   if (ZIPS) return ZIPS;
   try {
     const res = await fetch(ZIP_CENTROIDS_URL, { cache: "no-store" });
-    if (!res.ok) throw new Error(res.status);
+    if (!res.ok) throw new Error(`zip centroids ${res.status}`);
     ZIPS = await res.json();
-    debug("Loaded zip_centroids.json keys:", Object.keys(ZIPS).length);
   } catch (e) {
     console.warn("zip_centroids.json not found or failed to load. Points disabled.", e);
     ZIPS = {};
@@ -138,7 +141,7 @@ function normalizeAwardRow(row) {
                  lower["place of performance zip code (+4)"] ?? "";
   const zip5   = String(zipRaw).slice(0, 5);
 
-  // coords (optional columns; usually absent)
+  // coords: use CSV values if present; otherwise null (we fill from ZIPS later)
   const lat = lower["latitude"]  != null ? +lower["latitude"]  : null;
   const lon = lower["longitude"] != null ? +lower["longitude"] : null;
 
@@ -237,72 +240,60 @@ async function ensureTopo() {
   if (!_countiesGeo)  _countiesGeo  = topojson.feature(_countiesTopo, _countiesTopo.objects.counties);
 }
 
-/* ================= point layer builder ================= */
+/* ================= state drilldown & points ================= */
 
-// Marker sizing (sqrt scale)
-function sizeScale(values, min = 6, max = 28) {
-  const vmax = Math.max(...values, 1);
-  const k = (max - min) / Math.sqrt(vmax);
-  return (x) => min + k * Math.sqrt(x || 0);
-}
-
-function buildStatePointTrace(stateCode, awardsAll, pscPrefix, naicsPrefix) {
+function buildPointsForState(stateCode, awardsPos, pscPrefix, naicsPrefix) {
   if (!ZIPS) return null;
 
-  // Aggregate by ZIP + Recipient within the state
+  // Aggregate by recipient+ZIP so multiple awards at same ZIP aren’t all separate
   const by = {};
-  for (const r of awardsAll) {
+  for (const r of awardsPos) {
     if (r.state !== stateCode) continue;
     if (!passesCodeFilters(r, pscPrefix, naicsPrefix)) continue;
     const amt = +r.award_amount || 0;
     if (amt <= 0) continue;
     const zip = String(r.pop_zip5 || "").slice(0, 5);
-    if (!zip || !ZIPS[zip]) continue;
+    const z   = zip && ZIPS[zip] ? ZIPS[zip] : null;
+    if (!z || z.lat == null || z.lon == null) continue;
+
     const key = `${zip}__${r.recipient_name || ""}`;
-    if (!by[key]) by[key] = { zip, name: r.recipient_name || "", amount: 0, count: 0 };
+    if (!by[key]) by[key] = { lat: z.lat, lon: z.lon, name: r.recipient_name || "", zip, amount: 0, count: 0 };
     by[key].amount += amt;
     by[key].count  += 1;
   }
+
   const pts = Object.values(by);
   if (!pts.length) return null;
 
-  const amounts = pts.map(p => p.amount);
-  const S = sizeScale(amounts);
-
-  const lats = [], lons = [], sizes = [], texts = [];
-  pts.forEach(p => {
-    const z = ZIPS[p.zip];
-    if (!z || z.lat == null || z.lon == null) return;
-    lats.push(z.lat); lons.push(z.lon);
-    sizes.push(S(p.amount));
-    texts.push(`<b>${p.name}</b><br>${fmtUSD(p.amount)} · ${p.count} award(s)<br>${p.zip}`);
-  });
-
-  if (!lats.length) return null;
+  // sqrt size scaling
+  const vmax = Math.max(...pts.map(p => p.amount), 1);
+  const min = 6, max = 28, k = (max - min) / Math.sqrt(vmax);
 
   return {
     type: "scattergeo",
     mode: "markers",
-    lat: lats,
-    lon: lons,
-    text: texts,
+    lat:  pts.map(p => p.lat),
+    lon:  pts.map(p => p.lon),
+    text: pts.map(p => `<b>${p.name}</b><br>${fmtUSD(p.amount)} · ${p.count} award(s)<br>${p.zip}`),
     hovertemplate: "%{text}<extra></extra>",
-    marker: { size: sizes, line: { width: 0.5, color: "#333" }, opacity: 0.85 },
+    marker: {
+      size: pts.map(p => min + k * Math.sqrt(p.amount || 0)),
+      line: { width: 0.5, color: "#333" },
+      opacity: 0.85
+    },
     name: "Recipients",
     showlegend: false
   };
 }
 
-/* ================= draw state drilldown (base layers only) ================= */
-
-// Track the current points layer (trace index) in state view
-let POINT_TRACE_ID = null;
-
-async function drawStateDrilldown(stateCode, awardsAll) {
+async function drawStateDrilldown(stateCode, pscPrefix, naicsPrefix) {
   await ensureTopo();
+  await loadZipCentroids();
+
   const fips = STATE_FIPS[stateCode];
   if (!fips || !_statesGeo || !_countiesGeo) return;
 
+  // --- outline layers ---
   const stateFeat = _statesGeo.features.find(f => String(f.id).padStart(2, "0") === fips);
   const counties  = _countiesGeo.features.filter(f => String(f.id).padStart(5,"0").slice(0,2) === fips);
 
@@ -314,7 +305,9 @@ async function drawStateDrilldown(stateCode, awardsAll) {
     z: [1],
     showscale: false,
     marker: { line: { width: 1, color: "#444" } },
-    hovertemplate: `${stateCode}<extra></extra>`
+    hovertemplate: `${stateCode}<extra></extra>`,
+    name: "state",
+    showlegend: false
   };
 
   const countyOutlines = [];
@@ -329,7 +322,8 @@ async function drawStateDrilldown(stateCode, awardsAll) {
         lon: outer.map(p => p[0]),
         line: { width: 0.7, color: "#999" },
         hoverinfo: "skip",
-        showlegend: false
+        showlegend: false,
+        name: "county"
       });
     });
   });
@@ -340,126 +334,96 @@ async function drawStateDrilldown(stateCode, awardsAll) {
     showlegend: false
   }, { displayModeBar:false });
 
-  // Current filters
-  const pscPrefix   = ($("pscFilter")?.value || "").trim();
-  const naicsPrefix = ($("naicsFilter")?.value || "").trim();
-
-  // Update the sidebar list every time we redraw
-  updateStateSidebar(stateCode, awardsAll, pscPrefix, naicsPrefix);
-
-  // Build the points layer from ZIP centroids (precomputed file)
-  await loadZipCentroids();
-
-  const inState = awardsAll.filter(r =>
-    r.state === stateCode && (+r.award_amount || 0) > 0 && passesCodeFilters(r, pscPrefix, naicsPrefix)
-  );
-
-  // attach coords from ZIPS; drop anything without valid numbers
-  const ptsClean = inState.map(r => {
-    const zip = String(r.pop_zip5 || "").slice(0, 5);
-    const z   = zip && ZIPS[zip] ? ZIPS[zip] : null;
-    const lat = r.lat ?? (z ? z.lat : null);
-    const lon = r.lon ?? (z ? z.lon : null);
-    return { ...r, lat, lon };
-  }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
-
-  const lat = ptsClean.map(p => p.lat);
-  const lon = ptsClean.map(p => p.lon);
-  const text = ptsClean.map(p =>
-    `<b>${p.recipient_name || "Unknown"}</b><br>${p.pop_city || ""}${p.pop_zip5 ? " " + p.pop_zip5 : ""}<br>${fmtUSD(p.award_amount)}`
-  );
-
-  POINT_TRACE_ID = null;
-  if (lat.length) {
-    Plotly.addTraces("map", [{
-      type: "scattergeo",
-      mode: "markers",
-      lat, lon,
-      text,
-      hovertemplate: "%{text}<extra></extra>",
-      marker: { size: 8, opacity: 0.85, line: { width: 0.5, color: "#333" } },
-      name: "Recipients",
-      showlegend: false
-    }]).then((inds) => { POINT_TRACE_ID = inds && inds[0]; });
+  // Recipient points by ZIP (filtered)
+  const pts = buildPointsForState(stateCode, DATA.awardsPos, pscPrefix, naicsPrefix);
+  window.POINT_TRACE_ID = null;
+  if (pts) {
+    const inds = await Plotly.addTraces("map", [pts]);
+    window.POINT_TRACE_ID = Array.isArray(inds) ? inds[0] : inds;
   }
 
+  // UI state
   window.MAP_MODE = "state";
-  $("backToUS")?.style && ( $("backToUS").style.display = "inline-block" );
-  const toggleBtn = $("togglePoints");
-  if (toggleBtn) {
-    toggleBtn.style.display = lat.length ? "inline-block" : "none";
-    toggleBtn.textContent   = "Hide recipient points";
-  }
+  window.CURRENT_STATE = stateCode;
+  $("backToUS")?.style?.setProperty("display", "inline-block");
 }
 
+/* ================= national map ================= */
 
-/* ================= helper: update the points layer in state view ================= */
+function drawRecipientsList(stateCode, pscPrefix, naicsPrefix) {
+  const top = topRecipientsForState(DATA.awards, stateCode, pscPrefix, naicsPrefix, 200);
+  $("stateTitle").textContent = `Recipients in ${stateCode}`;
 
-async function updateStatePoints(awardsPos) {
-  const gd = $("map");
-  if (!gd || window.MAP_MODE !== "state" || !CURRENT_STATE) return;
-
-  await loadZipCentroids();
-  const pscPrefix   = ($("pscFilter")?.value || "").trim();
-  const naicsPrefix = ($("naicsFilter")?.value || "").trim();
-
-  const pts = buildStatePointTrace(CURRENT_STATE, awardsPos, pscPrefix, naicsPrefix);
-  const btn = $("togglePoints");
-
-  if (!pts) {
-    if (POINT_TRACE_ID != null) {
-      await Plotly.deleteTraces(gd, POINT_TRACE_ID);
-      POINT_TRACE_ID = null;
-    }
-    if (btn) btn.textContent = "Show recipient points";
-    debug(`[${CURRENT_STATE}] no point trace for current filters`);
-    return;
-  }
-
-  if (POINT_TRACE_ID == null) {
-    const inds = await Plotly.addTraces(gd, pts);
-    POINT_TRACE_ID = Array.isArray(inds) ? inds[0] : inds;
-  } else {
-    await Plotly.restyle(gd, {
-      lat: [pts.lat],
-      lon: [pts.lon],
-      text: [pts.text],
-      "marker.size": [pts.marker.size],
-      visible: true
-    }, POINT_TRACE_ID);
-  }
-  if (btn) btn.textContent = "Hide recipient points";
-  debug(`[${CURRENT_STATE}] points trace updated; n=${pts.lat.length}`);
-}
-
-/* ----- state sidebar updater ----- */
-function updateStateSidebar(stateCode, awardsAll, pscPrefix, naicsPrefix) {
-  const listEl = $("stateList");
-  const titleEl = $("stateTitle");
-  const sumEl = $("stateSummary");
-
-  if (titleEl) titleEl.textContent = `Recipients in ${stateCode}`;
-
-  const top = topRecipientsForState(awardsAll, stateCode, pscPrefix, naicsPrefix, 200);
   if (!top.length) {
-    if (listEl) listEl.innerHTML = "<li class='muted'>No recipients for current filters.</li>";
-    if (sumEl) sumEl.textContent = "";
+    $("stateList").innerHTML = "<li class='muted'>No recipients for current filters.</li>";
+    $("stateSummary").textContent = "";
     return;
   }
 
   const totalAmt = top.reduce((s, r) => s + r.amount, 0);
   const totalCnt = top.reduce((s, r) => s + r.count, 0);
-  if (sumEl) sumEl.textContent = `${top.length} recipients · ${totalCnt} awards · ${fmtUSD(totalAmt)} total`;
+  $("stateSummary").textContent = `${top.length} recipients · ${totalCnt} awards · ${fmtUSD(totalAmt)} total`;
+  $("stateList").innerHTML = top.map((r) => `
+    <li>
+      <strong>${r.name}</strong>
+      — ${fmtUSD(r.amount)} (${r.count})
+      · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a>
+    </li>
+  `).join("");
+}
 
-  if (listEl) {
-    listEl.innerHTML = top.map((r, i) => `
-      <li>
-        <strong>${i + 1}. ${r.name}</strong>
-        — ${fmtUSD(r.amount)} (${r.count})
-        · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a>
-      </li>
-    `).join("");
+async function drawUSMap(pscPrefix, naicsPrefix, metric) {
+  const by = aggregateByState(DATA.awardsPos, metric, pscPrefix, naicsPrefix);
+  const states = Object.keys(by);
+  const z = states.map((s) => (metric === "amount" ? by[s].amount : by[s].count));
+
+  if (!states.length) {
+    const map = $("map");
+    if (map) map.innerHTML = "<p><em>No data for current filters.</em></p>";
+    const note = $("mapNote");
+    if (note) note.textContent = (pscPrefix || naicsPrefix)
+      ? "Try clearing or changing PSC/NAICS filters."
+      : "";
+    return;
   }
+
+  const text = states.map((s) => {
+    const a = by[s];
+    return `${s}: ${metric === "amount" ? fmtUSD(a.amount) : `${a.count} awards`}`;
+  });
+
+  await Plotly.newPlot(
+    "map",
+    [{
+      type: "choropleth",
+      locationmode: "USA-states",
+      locations: states,
+      z: z,
+      text: text,
+      colorbar: { title: metric === "amount" ? "USD" : "Count" },
+      name: "usa",
+      showscale: true,
+      showlegend: false
+    }],
+    { geo: { scope: "usa", projection: { type: "albers usa" } }, margin: { l: 10, r: 10, t: 10, b: 10 }, showlegend:false },
+    { displayModeBar: false }
+  );
+
+  const mapEl = $("map");
+  if (mapEl) {
+    mapEl.on("plotly_click", async (ev) => {
+      const loc = ev.points?.[0]?.location; // e.g., "MD"
+      if (!loc) return;
+      drawRecipientsList(loc, pscPrefix, naicsPrefix);
+      await drawStateDrilldown(loc, pscPrefix, naicsPrefix);
+    });
+  }
+
+  // Reset national view state
+  window.MAP_MODE = "us";
+  window.CURRENT_STATE = null;
+  $("backToUS")?.style?.setProperty("display", "none");
+  window.POINT_TRACE_ID = null;
 }
 
 /* ================= main ================= */
@@ -471,27 +435,19 @@ async function render() {
     loadCSV(AWARDS_URL).catch((e) => { debug(e.message); return []; }),
   ]);
 
-  debug("AWARDS_URL:", AWARDS_URL);
-  debug("TOP_RECIP_URL:", TOP_RECIP_URL);
-  debug("TOP_RECIP_ENRICH_URL:", TOP_RECIP_ENRICH_URL);
   debug("awardsRaw length:", awardsRaw.length, "recipsMaybe length:", recipsMaybe ? recipsMaybe.length : null);
 
-  // Normalize
+  // Normalize and store
   const awardsAllRows = awardsRaw.map(normalizeAwardRow);
-  const awards        = awardsAllRows; // for tables/side list
-  const awardsPos     = awardsAllRows.filter(r => (+r.award_amount || 0) > 0); // for maps/points
+  DATA.awards    = awardsAllRows;
+  DATA.awardsPos = awardsAllRows.filter(r => (+r.award_amount || 0) > 0);
 
-  // Expose for console debugging
-  window._awards = awards;
-  window._awardsPos = awardsPos;
-
-  /* ----- Top recipients (All vs SB/8a) ----- */
-
+  // --- Top recipients (All vs SB/8a) ---
   const recipsAll = (
     recipsMaybe ??
     (() => {
       const by = {};
-      for (const r of awardsPos) if (r.recipient_name)
+      for (const r of DATA.awardsPos) if (r.recipient_name)
         by[r.recipient_name] = (by[r.recipient_name] || 0) + r.award_amount;
       return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside: null }));
     })()
@@ -501,15 +457,7 @@ async function render() {
     set_aside: r["Type of Set Aside"] ?? r["Type Of Set Aside"] ?? r["type_of_set_aside"] ?? r.set_aside ?? null,
   })).filter((r) => r.name);
 
-  const recipsSB = (() => {
-    const by = {};
-    for (const r of awardsPos) {
-      if (!r.recipient_name) continue;
-      if (!isSmallBusinessSetAside(r.set_aside)) continue;
-      by[r.recipient_name] = (by[r.recipient_name] || 0) + r.award_amount;
-    }
-    return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside: "SB/8(a)" }));
-  })();
+  DATA.recipsAll = recipsAll;
 
   // UI refs
   const topNInput  = $("topN");
@@ -520,9 +468,19 @@ async function render() {
   let currentTab = "all";
 
   function dataForTab() {
-    const base = (currentTab === "sb" ? recipsSB : recipsAll)
-      .slice()
-      .sort((a, b) => b.amount - a.amount);
+    const base = (currentTab === "sb"
+      ? (() => {
+          const by = {};
+          for (const r of DATA.awardsPos) {
+            if (!r.recipient_name) continue;
+            if (!isSmallBusinessSetAside(r.set_aside)) continue;
+            by[r.recipient_name] = (by[r.recipient_name] || 0) + r.award_amount;
+          }
+          return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside: "SB/8(a)" }));
+        })()
+      : DATA.recipsAll
+    ).slice().sort((a, b) => b.amount - a.amount);
+
     const N = Math.min(Math.max(+topNInput?.value || 25, 1), 200);
     return base.slice(0, N);
   }
@@ -573,157 +531,65 @@ async function render() {
 
   if (topNInput) topNInput.addEventListener("input", drawChart);
   if (tabAllBtn) tabAllBtn.addEventListener("click", () => setTab("all"));
-  if (tabSBBtn)  tabSBBtn.addEventListener("click",  () => setTab("sb"));
+  if (tabSBBtn)  tabSBBtn.addEventListener("click", () => setTab("sb"));
   setTab("all");
 
-  /* ----- US Map + filters (national) ----- */
+  /* ----- Maps & filters ----- */
 
-function drawUSMap() {
-  // 1) read current filters + metric
-  const pscPrefix   = ($("pscFilter")?.value || "").trim();
-  const naicsPrefix = ($("naicsFilter")?.value || "").trim();
-  const metric      = $("aggMetric")?.value || "amount"; // "amount" | "count"
+  const pscInput    = $("pscFilter");
+  const naicsInput  = $("naicsFilter");
+  const metricSel   = $("aggMetric");
+  const applyBtn    = $("applyFilters");
+  const clearBtn    = $("clearSelection");
+  const backBtn     = $("backToUS");
+  const toggleBtn   = $("togglePoints");
 
-  // 2) aggregate by state from positive-amount rows
-  const by = aggregateByState(awardsPos, metric, pscPrefix, naicsPrefix);
-  const states = Object.keys(by);
-  const z = states.map((s) => (metric === "amount" ? by[s].amount : by[s].count));
-  const text = states.map((s) => {
-    const a = by[s];
-    return `${s}: ${metric === "amount" ? fmtUSD(a.amount) : `${a.count} awards`}`;
-  });
+  async function redraw() {
+    const psc   = (pscInput?.value   || "").trim();
+    const naics = (naicsInput?.value || "").trim();
+    const metric = metricSel?.value || "amount";
 
-  // 3) nothing to show?
-  if (!states.length) {
-    const map = $("map");
-    if (map) map.innerHTML = "<p><em>No data for current filters.</em></p>";
-    $("mapNote") && ( $("mapNote").textContent =
-      (pscPrefix || naicsPrefix) ? "Try clearing or changing PSC/NAICS filters." : ""
-    );
-    // reset UI bits
+    if (window.MAP_MODE === "state" && window.CURRENT_STATE) {
+      drawRecipientsList(window.CURRENT_STATE, psc, naics);
+      await drawStateDrilldown(window.CURRENT_STATE, psc, naics);
+    } else {
+      await drawUSMap(psc, naics, metric);
+    }
+  }
+
+  await drawUSMap((pscInput?.value||""), (naicsInput?.value||""), (metricSel?.value||"amount"));
+
+  applyBtn?.addEventListener("click", () => { redraw(); });
+  metricSel?.addEventListener("change", () => { redraw(); });
+
+  clearBtn?.addEventListener("click", async () => {
+    if (pscInput)   pscInput.value = "";
+    if (naicsInput) naicsInput.value = "";
+    $("stateTitle").textContent   = "Click a state";
+    $("stateSummary").textContent = "";
+    $("stateList").innerHTML      = "";
     window.MAP_MODE = "us";
     window.CURRENT_STATE = null;
     $("backToUS")?.style?.setProperty("display", "none");
-    POINT_TRACE_ID = null;
-    $("stateTitle").textContent = "Click a state";
-    $("stateSummary").textContent = "";
-    $("stateList").innerHTML = "";
-    return;
-  }
-
-  // 4) draw national choropleth
-  Plotly.newPlot(
-    "map",
-    [{
-      type: "choropleth",
-      locationmode: "USA-states",
-      locations: states,
-      z: z,
-      text: text,
-      colorbar: { title: metric === "amount" ? "USD" : "Count" },
-    }],
-    { geo: { scope: "usa", projection: { type: "albers usa" } }, margin: { l: 10, r: 10, t: 10, b: 10 } },
-    { displayModeBar: false }
-  );
-
-  // 5) click -> drill into state using current filters
-  const mapEl = $("map");
-  if (mapEl) {
-    mapEl.on("plotly_click", async (ev) => {
-      const loc = ev.points?.[0]?.location; // e.g., "MD"
-      if (!loc) return;
-
-      // update side list (still honor filters)
-      const top = topRecipientsForState(awards, loc, pscPrefix, naicsPrefix, 200);
-      $("stateTitle").textContent = `Recipients in ${loc}`;
-      if (!top.length) {
-        $("stateList").innerHTML = "<li class='muted'>No recipients for current filters.</li>";
-        $("stateSummary").textContent = "";
-      } else {
-        const totalAmt = top.reduce((s, r) => s + r.amount, 0);
-        const totalCnt = top.reduce((s, r) => s + r.count, 0);
-        $("stateSummary").textContent = `${top.length} recipients · ${totalCnt} awards · ${fmtUSD(totalAmt)} total`;
-        $("stateList").innerHTML = top.map((r) => `
-          <li>
-            <strong>${r.name}</strong>
-            — ${fmtUSD(r.amount)} (${r.count})
-            · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a>
-          </li>
-        `).join("");
-      }
-
-      // remember current state + render state view + rebuild points with filters
-      window.CURRENT_STATE = loc;
-      await drawStateDrilldown(loc, awardsPos);  // this reads PSC/NAICS internally
-      await updateStatePoints(awardsPos);        // this reads CURRENT_STATE + filters
-    });
-  }
-
-  // 6) reset national-view UI state
-  window.MAP_MODE = "us";
-  window.CURRENT_STATE = null;
-  $("backToUS")?.style?.setProperty("display", "none");
-  POINT_TRACE_ID = null;
-
-  // clear state list header if we’re returning from a state
-  $("stateTitle").textContent = "Click a state";
-  $("stateSummary").textContent = "";
-  $("stateList").innerHTML = "";
-}
-
-  drawUSMap();
-
-  // Apply filters
-  $("applyFilters")?.addEventListener("click", async () => {
-    if (window.MAP_MODE === "state" && CURRENT_STATE) {
-      await drawStateDrilldown(CURRENT_STATE);
-      await updateStatePoints(awardsPos);
-      return;
-    }
-    drawUSMap();
+    await drawUSMap("", "", metricSel?.value || "amount");
   });
 
-  $("aggMetric")?.addEventListener("change", drawUSMap);
-
-  // Clear filters & reset
-  $("clearSelection")?.addEventListener("click", () => {
-    $("pscFilter").value = "";
-    $("naicsFilter").value = "";
-    $("stateTitle").textContent = "Click a state";
-    $("stateSummary").textContent = "";
-    $("stateList").innerHTML = "";
-    if (window.MAP_MODE === "state") {
-      $("backToUS").style.display = "none";
-      window.MAP_MODE = "us";
-      CURRENT_STATE = null;
-    }
-    drawUSMap();
-  });
-
-  // Back button for drilldown
-  $("backToUS")?.addEventListener("click", () => {
+  backBtn?.addEventListener("click", async () => {
     window.MAP_MODE = "us";
-    CURRENT_STATE = null;
-    $("backToUS").style.display = "none";
-    $("stateTitle").textContent = "Click a state";
+    window.CURRENT_STATE = null;
+    $("backToUS")?.style?.setProperty("display", "none");
+    $("stateTitle").textContent   = "Click a state";
     $("stateSummary").textContent = "";
-    $("stateList").innerHTML = "";
-    drawUSMap();
+    $("stateList").innerHTML      = "";
+    await drawUSMap(pscInput?.value || "", naicsInput?.value || "", metricSel?.value || "amount");
   });
 
-  // Toggle recipient points (show/hide existing markers trace)
-  $("togglePoints")?.addEventListener("click", async (ev) => {
+  toggleBtn?.addEventListener("click", async (ev) => {
     const gd = $("map");
-    if (!gd || window.MAP_MODE !== "state") return;
-    if (POINT_TRACE_ID == null) {
-      // No points yet for this state → build them now
-      await updateStatePoints(awardsPos);
-      ev.currentTarget.textContent = "Hide recipient points";
-      return;
-    }
-    const current = gd.data[POINT_TRACE_ID];
+    if (!gd || window.MAP_MODE !== "state" || window.POINT_TRACE_ID == null) return;
+    const current = gd.data[window.POINT_TRACE_ID];
     const isHidden = current.visible === "legendonly" || current.visible === false;
-    await Plotly.restyle(gd, { visible: isHidden ? true : "legendonly" }, POINT_TRACE_ID);
+    await Plotly.restyle(gd, { visible: isHidden ? true : "legendonly" }, window.POINT_TRACE_ID);
     ev.currentTarget.textContent = isHidden ? "Hide recipient points" : "Show recipient points";
   });
 
@@ -731,7 +597,7 @@ function drawUSMap() {
 
   const thead = document.querySelector("#awardsTable thead");
   const tbody = document.querySelector("#awardsTable tbody");
-  let awardsSlice = 500; // default visible rows
+  let awardsSlice = 500;
 
   function renderAwardsTable() {
     if (!thead || !tbody) return;
@@ -747,7 +613,7 @@ function drawUSMap() {
       <th>Careers</th>
     </tr>`;
 
-    tbody.innerHTML = awards.slice(0, awardsSlice).map((r) => `
+    tbody.innerHTML = DATA.awards.slice(0, awardsSlice).map((r) => `
       <tr>
         <td>${r.action_date ?? ""}</td>
         <td>${r.recipient_name ?? ""}</td>
@@ -761,7 +627,7 @@ function drawUSMap() {
     `).join("");
 
     const summary = $("summary");
-    if (summary) summary.textContent = `Rows shown: ${Math.min(awardsSlice, awards.length)} of ${awards.length}`;
+    if (summary) summary.textContent = `Rows shown: ${Math.min(awardsSlice, DATA.awards.length)} of ${DATA.awards.length}`;
   }
 
   renderAwardsTable();
@@ -769,9 +635,9 @@ function drawUSMap() {
   const showMoreBtn = $("showMore");
   if (showMoreBtn) {
     showMoreBtn.addEventListener("click", () => {
-      awardsSlice = Math.min(awardsSlice + 1000, awards.length);
+      awardsSlice = Math.min(awardsSlice + 1000, DATA.awards.length);
       renderAwardsTable();
-      if (awardsSlice >= awards.length) showMoreBtn.disabled = true;
+      if (awardsSlice >= DATA.awards.length) showMoreBtn.disabled = true;
     });
   }
 
@@ -784,7 +650,7 @@ function drawUSMap() {
     awHead.innerHTML = `<tr><th>Recipient</th><th>Total Obligated</th></tr>`;
 
     function renderAwardeesTable(N = 200) {
-      const rows = recipsAll.slice().sort((a,b) => b.amount - a.amount).slice(0, N);
+      const rows = DATA.recipsAll.slice().sort((a,b) => b.amount - a.amount).slice(0, N);
       awBody.innerHTML = rows.map(r =>
         `<tr><td>${r.name}</td><td>${fmtUSD(r.amount)}</td></tr>`
       ).join('');
@@ -796,6 +662,10 @@ function drawUSMap() {
 
     renderAwardeesTable();
   }
+
+  // Expose for quick console checks
+  window._awards    = DATA.awards;
+  window._awardsPos = DATA.awardsPos;
 }
 
 /* ================= run ================= */
