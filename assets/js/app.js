@@ -361,6 +361,46 @@ async function render() {
   const awards        = awardsAllRows; // all rows for tables/side list
   const awardsPos     = awardsAllRows.filter(r => (+r.award_amount || 0) > 0); // positive amounts for maps
 
+    // Expose for helpers
+  window._awards = awards;
+
+  // initialize filter state and first render
+  awardsFiltered = awards.slice();
+  renderAwardsTable();
+
+  // NAICS filter events
+  if (awardsNaicsInput) {
+    awardsNaicsInput.addEventListener("input", debounce((e) => {
+      awardsFilter.naics = (e.target.value || "").trim();
+      applyAwardsFiltersAndRender();
+    }));
+  }
+  if (awardsNaicsClear) {
+    awardsNaicsClear.addEventListener("click", () => {
+      awardsFilter.naics = "";
+      if (awardsNaicsInput) awardsNaicsInput.value = "";
+      applyAwardsFiltersAndRender();
+    });
+  }
+
+  // "Show more rows" still works, but respects filters
+  const showMoreBtn = $("showMore");
+  if (showMoreBtn) {
+    showMoreBtn.addEventListener("click", () => {
+      awardsSlice = Math.min(awardsSlice + 1000, awardsFiltered.length);
+      renderAwardsTable();
+      if (awardsSlice >= awardsFiltered.length) showMoreBtn.disabled = true;
+    });
+  }
+
+  // Optional: collapse behavior
+  const awardsPanel = $("awardsPanel");
+  if (awardsPanel) {
+    awardsPanel.addEventListener("toggle", () => {
+      if (awardsPanel.open) renderAwardsTable();
+    });
+  }
+
   // expose for console debugging
   window._awards = awards;
   window._awardsPos = awardsPos;
@@ -605,8 +645,6 @@ async function render() {
 
   /* ----- Recent awards table (raw) ----- */
 
-  /* ----- Recent awards table (raw) ----- */
-
   const thead = document.querySelector("#awardsTable thead");
   const tbody = document.querySelector("#awardsTable tbody");
 
@@ -675,15 +713,85 @@ async function render() {
       renderAwardsTable(); // re-render with new sort
     };
   }
+  // --- NAICS filter & sorting (Recent awards table) ---
+  const awardsNaicsInput = $("awardsNaics");
+  const awardsNaicsClear = $("awardsNaicsClear");
+  let awardsFiltered = [];                    // filtered rows to display
+  const awardsFilter = { naics: "" };
+
+  let awardsSlice = 500;                      // keep your existing default page size
+  let sortState = { field: null, dir: "desc" }; // "amount" desc by default if you want
+
+  const debounce = (fn, t=220) => { let h; return (...a)=>{ clearTimeout(h); h=setTimeout(()=>fn(...a),t); }; };
+  const num = (x) => +x || 0;
+
+  function matchesNaicsPrefix(row, prefix) {
+    if (!prefix) return true;
+    const code = String(row.naics || "").replace(/\D/g, "");
+    return code.startsWith(prefix);
+  }
+
+  function applyAwardsFiltersAndRender() {
+    const pfx = (awardsFilter.naics || "").trim();
+    awardsFiltered = window._awards.filter(r => matchesNaicsPrefix(r, pfx));
+    awardsSlice = Math.min(awardsSlice, awardsFiltered.length);
+    renderAwardsTable();
+  }
+
+  // Simple sorter for the table
+  const sorters = {
+    "date": (a,b) => (Date.parse(a.action_date||"")||0) - (Date.parse(b.action_date||"")||0),
+    "name": (a,b) => String(a.recipient_name||"").localeCompare(String(b.recipient_name||"")),
+    "amount": (a,b) => num(a.award_amount) - num(b.award_amount),
+    "piid": (a,b) => String(a.piid||"").localeCompare(String(b.piid||"")),
+    "set": (a,b) => String(a.set_aside||"").localeCompare(String(b.set_aside||"")),
+    "psc": (a,b) => String(a.psc||"").localeCompare(String(b.psc||"")),
+    "naics": (a,b) => String(a.naics||"").localeCompare(String(b.naics||"")),
+  };
+
+  function sortRows(rows) {
+    if (!sortState.field) return rows;
+    const cmp = sorters[sortState.field];
+    if (!cmp) return rows;
+    const dir = sortState.dir === "desc" ? -1 : 1;
+    return rows.slice().sort((a,b) => dir * cmp(a,b));
+  }
 
   function renderAwardsTable() {
+    const thead = document.querySelector("#awardsTable thead");
+    const tbody = document.querySelector("#awardsTable tbody");
     if (!thead || !tbody) return;
 
-    renderHeader();
+    // clickable, sortable headers
+    thead.innerHTML = `
+      <tr>
+        <th class="sortable" data-field="date">Action Date <span class="dir"></span></th>
+        <th class="sortable" data-field="name">Recipient Name <span class="dir"></span></th>
+        <th class="sortable" data-field="amount">Award Amount <span class="dir"></span></th>
+        <th class="sortable" data-field="piid">PIID <span class="dir"></span></th>
+        <th class="sortable" data-field="set">Type of Set Aside / Size <span class="dir"></span></th>
+        <th class="sortable" data-field="psc">PSC <span class="dir"></span></th>
+        <th class="sortable" data-field="naics">NAICS <span class="dir"></span></th>
+        <th>Careers</th>
+      </tr>`;
 
-    // Sort the full dataset, then slice to current page
-    const sorted = sortAwards(awards);
-    const rows = sorted.slice(0, awardsSlice);
+    // show sort arrows
+    for (const th of thead.querySelectorAll("th.sortable")) {
+      const f = th.getAttribute("data-field");
+      const dir = (sortState.field === f) ? (sortState.dir === "asc" ? "▲" : "▼") : "";
+      th.querySelector(".dir").textContent = dir;
+      th.onclick = () => {
+        if (sortState.field === f) {
+          sortState.dir = (sortState.dir === "asc" ? "desc" : "asc");
+        } else {
+          sortState.field = f;
+          sortState.dir = (f === "amount" || f === "date") ? "desc" : "asc";
+        }
+        renderAwardsTable();
+      };
+    }
+
+    const rows = sortRows(awardsFiltered).slice(0, awardsSlice);
 
     tbody.innerHTML = rows.map((r) => `
       <tr>
@@ -699,8 +807,10 @@ async function render() {
     `).join("");
 
     const summary = $("summary");
-    if (summary) summary.textContent = `Rows shown: ${Math.min(awardsSlice, awards.length)} of ${awards.length}`;
+    if (summary) summary.textContent =
+      `Rows shown: ${Math.min(awardsSlice, awardsFiltered.length)} of ${awardsFiltered.length}`;
   }
+
 
   renderAwardsTable();
 

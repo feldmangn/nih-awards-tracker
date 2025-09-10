@@ -17,6 +17,14 @@ permalink: /data/
   table.table tbody tr:nth-child(even) { background:#f7fbff; }
   able.table thead th { background:#1f77b4; color:#fff; text-align:left; padding:.45rem .6rem; position:sticky; top:0; cursor:pointer; }
 </style>
+<style>
+  #awardsPanel > summary .pill { width:2rem; text-align:center; }
+  #awardsPanel[open] > summary .pill { content:"–"; }
+  #awardsPanel[open] > summary .pill::after { content:"–"; }
+  #awardsPanel:not([open]) > summary .pill::after { content:"+"; }
+  th.sortable { cursor:pointer; user-select:none; }
+  th.sortable .dir { opacity:.6; font-size:.9em; margin-left:.25rem; }
+</style>
 
 <div class="prose">
 
@@ -68,21 +76,34 @@ permalink: /data/
 
   <!-- Recent awards (raw table) -->
   <h2 style="margin-top:2rem;">Recent awards (raw)</h2>
-  <div class="card">
-    <div id="summary" class="muted" style="margin:.5rem 0;"></div>
-    <div style="display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem;">
-      <a class="pill" href="{{ '/data/nih_awards_last_90d.csv'  | relative_url }}">Download CSV</a>
-      <a class="pill" href="{{ '/data/nih_awards_last_90d.json' | relative_url }}">Download JSON</a>
-      <button id="showMore" class="pill">Show more rows</button>
-      <button id="showAll"  class="pill">Show all</button>
+  <details id="awardsPanel" class="card" style="padding:0;">
+    <summary style="list-style:none; padding:1rem; cursor:pointer; display:flex; align-items:center; gap:.5rem; border-bottom:1px solid #eee;">
+      <span class="pill" aria-hidden="true">+</span>
+      <strong>Show / hide recent awards</strong>
+      <span id="summary" class="muted" style="margin-left:auto;"></span>
+    </summary>
+
+    <div style="padding:1rem;">
+      <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem;">
+        <a class="pill" href="{{ '/data/nih_awards_last_90d.csv'  | relative_url }}">Download CSV</a>
+        <a class="pill" href="{{ '/data/nih_awards_last_90d.json' | relative_url }}">Download JSON</a>
+        <button id="showMore" class="pill">Show more rows</button>
+
+        <!-- NEW: NAICS filter -->
+        <span class="muted" style="margin-left:.75rem;">Filter NAICS:</span>
+        <input id="awardsNaics" placeholder="e.g. 541 or 541714" style="padding:.35rem .5rem; width:12rem;">
+        <button id="awardsNaicsClear" class="pill">Clear</button>
+      </div>
+
+      <div style="overflow:auto;">
+        <table id="awardsTable" class="table" style="min-width:1000px;">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
-    <div style="overflow:auto;">
-      <table id="awardsTable" class="table" style="min-width:1000px;">
-        <thead></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
+  </details>
+
 
   <!-- Recent awardees (aggregated) -->
   <h2 style="margin-top:2rem;">Recent awardees (top recipients by total)</h2>
