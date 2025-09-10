@@ -291,13 +291,16 @@ function buildStatePointTrace(stateCode, awardsAll, pscPrefix, naicsPrefix) {
 
 /* ================= draw state drilldown (base layers only) ================= */
 
-async function drawStateDrilldown(stateCode) {
+// Track the current points layer (trace index) in state view
+let POINT_TRACE_ID = null;
+
+async function drawStateDrilldown(stateCode, awardsAll) {
   await ensureTopo();
   const fips = STATE_FIPS[stateCode];
   if (!fips || !_statesGeo || !_countiesGeo) return;
 
   const stateFeat = _statesGeo.features.find(f => String(f.id).padStart(2, "0") === fips);
-  const counties = _countiesGeo.features.filter(f => String(f.id).padStart(5,"0").slice(0,2) === fips);
+  const counties  = _countiesGeo.features.filter(f => String(f.id).padStart(5,"0").slice(0,2) === fips);
 
   const stateFill = {
     type: "choropleth",
@@ -333,10 +336,58 @@ async function drawStateDrilldown(stateCode) {
     showlegend: false
   }, { displayModeBar:false });
 
+  // Current filters
+  const pscPrefix   = ($("pscFilter")?.value || "").trim();
+  const naicsPrefix = ($("naicsFilter")?.value || "").trim();
+
+  // Update the sidebar list every time we redraw
+  updateStateSidebar(stateCode, awardsAll, pscPrefix, naicsPrefix);
+
+  // Build the points layer from ZIP centroids (precomputed file)
+  await loadZipCentroids();
+
+  const inState = awardsAll.filter(r =>
+    r.state === stateCode && (+r.award_amount || 0) > 0 && passesCodeFilters(r, pscPrefix, naicsPrefix)
+  );
+
+  // attach coords from ZIPS; drop anything without valid numbers
+  const ptsClean = inState.map(r => {
+    const zip = String(r.pop_zip5 || "").slice(0, 5);
+    const z   = zip && ZIPS[zip] ? ZIPS[zip] : null;
+    const lat = r.lat ?? (z ? z.lat : null);
+    const lon = r.lon ?? (z ? z.lon : null);
+    return { ...r, lat, lon };
+  }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+
+  const lat = ptsClean.map(p => p.lat);
+  const lon = ptsClean.map(p => p.lon);
+  const text = ptsClean.map(p =>
+    `<b>${p.recipient_name || "Unknown"}</b><br>${p.pop_city || ""}${p.pop_zip5 ? " " + p.pop_zip5 : ""}<br>${fmtUSD(p.award_amount)}`
+  );
+
+  POINT_TRACE_ID = null;
+  if (lat.length) {
+    Plotly.addTraces("map", [{
+      type: "scattergeo",
+      mode: "markers",
+      lat, lon,
+      text,
+      hovertemplate: "%{text}<extra></extra>",
+      marker: { size: 8, opacity: 0.85, line: { width: 0.5, color: "#333" } },
+      name: "Recipients",
+      showlegend: false
+    }]).then((inds) => { POINT_TRACE_ID = inds && inds[0]; });
+  }
+
   window.MAP_MODE = "state";
-  CURRENT_STATE = stateCode;
-  $("backToUS")?.style?.setProperty("display", "inline-block");
+  $("backToUS")?.style && ( $("backToUS").style.display = "inline-block" );
+  const toggleBtn = $("togglePoints");
+  if (toggleBtn) {
+    toggleBtn.style.display = lat.length ? "inline-block" : "none";
+    toggleBtn.textContent   = "Hide recipient points";
+  }
 }
+
 
 /* ================= helper: update the points layer in state view ================= */
 
@@ -375,6 +426,36 @@ async function updateStatePoints(awardsPos) {
   }
   if (btn) btn.textContent = "Hide recipient points";
   debug(`[${CURRENT_STATE}] points trace updated; n=${pts.lat.length}`);
+}
+
+/* ----- state sidebar updater ----- */
+function updateStateSidebar(stateCode, awardsAll, pscPrefix, naicsPrefix) {
+  const listEl = $("stateList");
+  const titleEl = $("stateTitle");
+  const sumEl = $("stateSummary");
+
+  if (titleEl) titleEl.textContent = `Recipients in ${stateCode}`;
+
+  const top = topRecipientsForState(awardsAll, stateCode, pscPrefix, naicsPrefix, 200);
+  if (!top.length) {
+    if (listEl) listEl.innerHTML = "<li class='muted'>No recipients for current filters.</li>";
+    if (sumEl) sumEl.textContent = "";
+    return;
+  }
+
+  const totalAmt = top.reduce((s, r) => s + r.amount, 0);
+  const totalCnt = top.reduce((s, r) => s + r.count, 0);
+  if (sumEl) sumEl.textContent = `${top.length} recipients · ${totalCnt} awards · ${fmtUSD(totalAmt)} total`;
+
+  if (listEl) {
+    listEl.innerHTML = top.map((r, i) => `
+      <li>
+        <strong>${i + 1}. ${r.name}</strong>
+        — ${fmtUSD(r.amount)} (${r.count})
+        · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a>
+      </li>
+    `).join("");
+  }
 }
 
 /* ================= main ================= */
@@ -493,82 +574,98 @@ async function render() {
 
   /* ----- US Map + filters (national) ----- */
 
-  function drawUSMap() {
-    const pscPrefix   = ($("pscFilter")?.value || "").trim();
-    const naicsPrefix = ($("naicsFilter")?.value || "").trim();
-    const metric      = $("aggMetric")?.value || "amount";
+function drawUSMap() {
+  // 1) read current filters + metric
+  const pscPrefix   = ($("pscFilter")?.value || "").trim();
+  const naicsPrefix = ($("naicsFilter")?.value || "").trim();
+  const metric      = $("aggMetric")?.value || "amount"; // "amount" | "count"
 
-    const by = aggregateByState(awardsPos, metric, pscPrefix, naicsPrefix);
-    const states = Object.keys(by);
-    const z = states.map((s) => (metric === "amount" ? by[s].amount : by[s].count));
+  // 2) aggregate by state from positive-amount rows
+  const by = aggregateByState(awardsPos, metric, pscPrefix, naicsPrefix);
+  const states = Object.keys(by);
+  const z = states.map((s) => (metric === "amount" ? by[s].amount : by[s].count));
+  const text = states.map((s) => {
+    const a = by[s];
+    return `${s}: ${metric === "amount" ? fmtUSD(a.amount) : `${a.count} awards`}`;
+  });
 
-    if (!states.length) {
-      const map = $("map");
-      if (map) map.innerHTML = "<p><em>No data for current filters.</em></p>";
-      const note = $("mapNote");
-      if (note) note.textContent = (pscPrefix || naicsPrefix)
-        ? "Try clearing or changing PSC/NAICS filters."
-        : "";
-      return;
-    }
-
-    const text = states.map((s) => {
-      const a = by[s];
-      return `${s}: ${metric === "amount" ? fmtUSD(a.amount) : `${a.count} awards`}`;
-    });
-
-    Plotly.newPlot(
-      "map",
-      [{
-        type: "choropleth",
-        locationmode: "USA-states",
-        locations: states,
-        z: z,
-        text: text,
-        colorbar: { title: metric === "amount" ? "USD" : "Count" },
-      }],
-      { geo: { scope: "usa", projection: { type: "albers usa" } }, margin: { l: 10, r: 10, t: 10, b: 10 } },
-      { displayModeBar: false }
+  // 3) nothing to show?
+  if (!states.length) {
+    const map = $("map");
+    if (map) map.innerHTML = "<p><em>No data for current filters.</em></p>";
+    $("mapNote") && ( $("mapNote").textContent =
+      (pscPrefix || naicsPrefix) ? "Try clearing or changing PSC/NAICS filters." : ""
     );
-
-    const mapEl = $("map");
-    if (mapEl) {
-      mapEl.on("plotly_click", async (ev) => {
-        const loc = ev.points?.[0]?.location; // e.g., "MD"
-        if (!loc) return;
-
-        // Update side list (use all rows)
-        const top = topRecipientsForState(awards, loc, pscPrefix, naicsPrefix, 200);
-        $("stateTitle").textContent = `Recipients in ${loc}`;
-
-        if (!top.length) {
-          $("stateList").innerHTML = "<li class='muted'>No recipients for current filters.</li>";
-          $("stateSummary").textContent = "";
-        } else {
-          const totalAmt = top.reduce((s, r) => s + r.amount, 0);
-          const totalCnt = top.reduce((s, r) => s + r.count, 0);
-          $("stateSummary").textContent = `${top.length} recipients · ${totalCnt} awards · ${fmtUSD(totalAmt)} total`;
-          $("stateList").innerHTML = top.map((r) => `
-            <li>
-              <strong>${r.name}</strong>
-              — ${fmtUSD(r.amount)} (${r.count})
-              · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a>
-            </li>
-          `).join("");
-        }
-
-        // Drill into state + build points
-        await drawStateDrilldown(loc);
-        await updateStatePoints(awardsPos);
-      });
-    }
-
-    // Reset national view state
+    // reset UI bits
     window.MAP_MODE = "us";
-    CURRENT_STATE = null;
+    window.CURRENT_STATE = null;
     $("backToUS")?.style?.setProperty("display", "none");
     POINT_TRACE_ID = null;
+    $("stateTitle").textContent = "Click a state";
+    $("stateSummary").textContent = "";
+    $("stateList").innerHTML = "";
+    return;
   }
+
+  // 4) draw national choropleth
+  Plotly.newPlot(
+    "map",
+    [{
+      type: "choropleth",
+      locationmode: "USA-states",
+      locations: states,
+      z: z,
+      text: text,
+      colorbar: { title: metric === "amount" ? "USD" : "Count" },
+    }],
+    { geo: { scope: "usa", projection: { type: "albers usa" } }, margin: { l: 10, r: 10, t: 10, b: 10 } },
+    { displayModeBar: false }
+  );
+
+  // 5) click -> drill into state using current filters
+  const mapEl = $("map");
+  if (mapEl) {
+    mapEl.on("plotly_click", async (ev) => {
+      const loc = ev.points?.[0]?.location; // e.g., "MD"
+      if (!loc) return;
+
+      // update side list (still honor filters)
+      const top = topRecipientsForState(awards, loc, pscPrefix, naicsPrefix, 200);
+      $("stateTitle").textContent = `Recipients in ${loc}`;
+      if (!top.length) {
+        $("stateList").innerHTML = "<li class='muted'>No recipients for current filters.</li>";
+        $("stateSummary").textContent = "";
+      } else {
+        const totalAmt = top.reduce((s, r) => s + r.amount, 0);
+        const totalCnt = top.reduce((s, r) => s + r.count, 0);
+        $("stateSummary").textContent = `${top.length} recipients · ${totalCnt} awards · ${fmtUSD(totalAmt)} total`;
+        $("stateList").innerHTML = top.map((r) => `
+          <li>
+            <strong>${r.name}</strong>
+            — ${fmtUSD(r.amount)} (${r.count})
+            · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a>
+          </li>
+        `).join("");
+      }
+
+      // remember current state + render state view + rebuild points with filters
+      window.CURRENT_STATE = loc;
+      await drawStateDrilldown(loc, awardsPos);  // this reads PSC/NAICS internally
+      await updateStatePoints(awardsPos);        // this reads CURRENT_STATE + filters
+    });
+  }
+
+  // 6) reset national-view UI state
+  window.MAP_MODE = "us";
+  window.CURRENT_STATE = null;
+  $("backToUS")?.style?.setProperty("display", "none");
+  POINT_TRACE_ID = null;
+
+  // clear state list header if we’re returning from a state
+  $("stateTitle").textContent = "Click a state";
+  $("stateSummary").textContent = "";
+  $("stateList").innerHTML = "";
+}
 
   drawUSMap();
 
