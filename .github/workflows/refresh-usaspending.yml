@@ -2,7 +2,7 @@ name: refresh-usaspending
 
 on:
   schedule:
-    - cron: "17 2 * * *"
+    - cron: "17 2 * * *"   # nightly @ 02:17 UTC
   workflow_dispatch: {}
 
 permissions:
@@ -25,52 +25,118 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # needed for ZIP centroid build:
+          # for centroid build & any light data munging
           pip install pgeocode pandas
 
-      - name: Pull USAspending (last 90 days)
-        working-directory: ./nih-awards-tracker
+      # ---------- Configure which agencies to pull ----------
+      # Format: <tier>|<exact USAspending agency name>
+      # Tip: add/remove lines here as needed (names must match USAspending).
+      - name: Prepare agency list
+        id: agencies
         run: |
-          python src/fetch_usaspending.py
-          python src/enrich.py data/nih_top_recipients_last_90d.csv
+          cat > agencies.list <<'EOF'
+          # HHS subtiers
+          subtier|National Institutes of Health
+          subtier|Advanced Research Projects Agency for Health
+          subtier|Agency for Healthcare Research and Quality
+          subtier|Centers for Medicare and Medicaid Services
+          # DoD (mix of top + subtiers)
+          toptier|Department of Defense
+          subtier|Office of Naval Research
+          subtier|Naval Information Warfare Systems Command
+          subtier|Air Force Research Laboratory
+          subtier|U.S. Army Medical Research and Development Command
+          subtier|U.S. Army Engineer Research and Development Center
+          subtier|Defense Health Agency
+          # DOE + subtiers
+          toptier|Department of Energy
+          subtier|Office of Science
+          subtier|Advanced Research Projects Agency-Energy
+          # EPA
+          toptier|Environmental Protection Agency
+          EOF
+          echo "Wrote agencies.list:"
+          cat agencies.list
+        working-directory: ./nih-awards-tracker
 
-      # NEW: build ZIP -> lat/lon file from the freshly produced CSV
-      - name: Build zip_centroids.json
+      # ---------- Pull USAspending for ALL agencies in one go ----------
+      - name: Pull USAspending (last 90 days, multi-agency)
+        working-directory: ./nih-awards-tracker
+        env:
+          DAYS: "90"
+        shell: bash
+        run: |
+          # Build the argument list of repeated --subtier/--toptier flags
+          ARGS=()
+          while IFS='|' read -r TIER NAME; do
+            # skip comments/blank lines
+            [[ -z "$TIER" ]] && continue
+            [[ "$TIER" == \#* ]] && continue
+            if [[ "$TIER" == "toptier" ]]; then
+              ARGS+=( --toptier "$NAME" )
+            else
+              ARGS+=( --subtier "$NAME" )
+            fi
+          done < agencies.list
+
+          echo "Calling fetch_usaspending.py with flags:"
+          printf ' %q' "${ARGS[@]}"; echo
+
+          python src/fetch_usaspending.py --days "$DAYS" "${ARGS[@]}"
+
+      # ---------- (Optional) Enrich top-recipients for EVERY agency ----------
+      - name: Enrich top-recipients (all agencies)
+        working-directory: ./nih-awards-tracker
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in data/*_top_recipients_last_90d.csv; do
+            echo "Enriching $f"
+            python src/enrich.py "$f" || echo "enrich failed for $f (continuing)"
+          done
+
+      # ---------- Build ONE zip_centroids.json from ALL agency CSVs ----------
+      - name: Build zip_centroids.json (aggregate)
         working-directory: ./nih-awards-tracker
         shell: bash
         run: |
           python - <<'PY'
-          import json, pandas as pd
+          import json, glob, pandas as pd
           from pathlib import Path
-          import pgeocode
+          import pgeocode, re
 
-          csv = Path("data/nih_awards_last_90d.csv")
-          if not csv.exists():
-              raise SystemExit(f"CSV not found: {csv.resolve()}")
+          files = sorted(glob.glob("data/*_awards_last_90d.csv"))
+          if not files:
+            raise SystemExit("No *_awards_last_90d.csv files found")
 
-          df = pd.read_csv(csv, dtype=str)
-
-          # Be tolerant to header variants
-          candidates = [
-            "Place Of Performance ZIP Code",
-            "Place of Performance ZIP Code",
-            "primary place of performance zip code",
-            "place of performance zip code",
+          zips = set()
+          CANDIDATES = [
+              "Place Of Performance ZIP Code",
+              "Place of Performance ZIP Code",
+              "primary place of performance zip code",
+              "place of performance zip code",
           ]
-          zcol = next((c for c in candidates if c in df.columns), None)
-          if not zcol:
-            raise SystemExit(f"ZIP column not found. Columns: {df.columns.tolist()}")
 
-          zips = (
-              df[zcol]
-              .dropna().astype(str)
-              .str.extract(r"(\d{5})")[0]
-              .dropna().unique().tolist()
-          )
+          for f in files:
+              try:
+                  df = pd.read_csv(f, dtype=str)
+              except Exception as e:
+                  print(f"Skip {f}: {e}")
+                  continue
+              zcol = next((c for c in CANDIDATES if c in df.columns), None)
+              if not zcol:
+                  print(f"{f}: ZIP column not found; columns={list(df.columns)[:8]}...")
+                  continue
+              z = (
+                  df[zcol].dropna().astype(str)
+                    .str.extract(r'(\d{5})')[0].dropna().tolist()
+              )
+              zips.update(z)
 
-          nomi = pgeocode.Nominatim("us")
+          print(f"Unique ZIPs to geocode: {len(zips)} from {len(files)} CSV(s)")
+          nomi = pgeocode.Nominatim('us')
           out = {}
-          for z in zips:
+          for z in sorted(zips):
               rec = nomi.query_postal_code(z)
               if pd.notna(rec.latitude) and pd.notna(rec.longitude):
                   out[z] = {"lat": float(rec.latitude), "lon": float(rec.longitude)}
@@ -80,6 +146,7 @@ jobs:
           print(f"Wrote {len(out)} ZIPs -> {out_path}")
           PY
 
+      # ---------- Publish to Pages (copies ALL generated CSV/JSON) ----------
       - name: Publish data for GitHub Pages
         run: |
           mkdir -p docs/data
@@ -111,5 +178,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data/* docs/last_update.txt docs/.nojekyll README.md \
                   nih-awards-tracker/data/*.csv nih-awards-tracker/data/*.json || true
-          git commit -m "chore: refresh data & ZIP centroids & timestamps" || echo "No changes"
+          git commit -m "chore: refresh multi-agency data, centroids & timestamps" || echo "No changes"
           git push

@@ -27,6 +27,22 @@ permalink: /data/
 </style>
 
 <div class="prose">
+    <!-- Agency picker -->
+  <div style="margin:.25rem 0 1rem 0;">
+    <label for="agencySelect" style="margin-right:.5rem;">Agency:</label>
+    <select id="agencySelect">
+      <option value="nih">NIH</option>
+      <option value="arpa-h">ARPA-H</option>
+      <option value="ahrq">AHRQ</option>
+      <option value="cms">CMS</option>
+      <option value="dod_army_usamrdc">DoD · Army · USAMRDC</option>
+      <option value="dod_navy_onr">DoD · Navy · ONR</option>
+      <option value="dod_air_force_afrl">DoD · Air Force · AFRL</option>
+      <option value="epa">EPA</option>
+      <option value="doe_sc">DOE · SC</option>
+      <option value="doe_arpa-e">DOE · ARPA-E</option>
+    </select>
+  </div>
 
   <!-- Top recipients -->
   <div class="card" style="margin-bottom:1rem;">
@@ -120,23 +136,50 @@ permalink: /data/
   <div id="debug"></div>
 </div>
 
-<!-- 1) libraries (must load before your app) -->
-<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<!-- topojson for any future state/county outlines (optional but harmless) -->
-<script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
-
-<!-- 2) Jekyll baseurl -> JS -->
+<!-- 2) Jekyll baseurl -> JS (must be before the URLs builder) -->
 <script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
 
-<!-- 3) Exact data URLs (works locally and on Pages) -->
+<!-- 3) Agency selection + URLs builder -->
 <script>
+  // 3a) Determine agency from URL (?agency=nih) or default to NIH
+  const params = new URLSearchParams(location.search);
+  const prefix = (params.get('agency') || 'nih').trim();
+
+  // 3b) Expose for app.js
+  window.__AGENCY_PREFIX__ = prefix;
+
+  // 3c) Build the exact data URLs for the chosen agency
+  const base = "{{ '/data/' | relative_url }}";
   window.APP_DATA_URLS = {
-    AWARDS: "{{ '/data/nih_awards_last_90d.csv' | relative_url }}",
-    TOP_RECIP: "{{ '/data/nih_top_recipients_last_90d.csv' | relative_url }}",
-    TOP_RECIP_ENRICH: "{{ '/data/nih_top_recipients_last_90d_enriched.csv' | relative_url }}"
+    AWARDS:          base + prefix + "_awards_last_90d.csv",
+    TOP_RECIP:       base + prefix + "_top_recipients_last_90d.csv",
+    TOP_RECIP_ENRICH:base + prefix + "_top_recipients_last_90d_enriched.csv"
   };
+
+  // 3d) Sync the dropdown + wire change handler (quickest: reload with ?agency=)
+  document.addEventListener('DOMContentLoaded', function () {
+    const sel = document.getElementById('agencySelect');
+    if (sel) {
+      // If the value exists in the options, set it
+      if ([...sel.options].some(o => o.value === prefix)) sel.value = prefix;
+
+      sel.addEventListener('change', () => {
+        const next = sel.value || 'nih';
+        const p = new URLSearchParams(location.search);
+        p.set('agency', next);
+        // reload so app.js will read the new APP_DATA_URLS cleanly
+        location.search = p.toString();
+      });
+    }
+
+    // 3e) Point the download buttons at this agency’s files
+    const csvA  = document.querySelector('a[href$="nih_awards_last_90d.csv"]');
+    const jsonA = document.querySelector('a[href$="nih_awards_last_90d.json"]');
+    if (csvA)  csvA.href  = base + prefix + "_awards_last_90d.csv";
+    if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
+  });
 </script>
 
 <!-- 4) your app (after all configs/libs) -->
 <script src="{{ '/assets/js/app.js' | relative_url }}"></script>
+

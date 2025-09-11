@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """
-NIH awards tracker via TRANSACTIONS (fast + robust)
-- Query NIH directly (Awarding + subtier = National Institutes of Health)
-- Optional fast mode (--no-detail) skips /awards/{id} calls
-- Robust detail mode fetches set-aside, business size, PoP city/zip/county
-- Writes CSV/JSON and top recipients
+USAspending fetcher (transactions) — multi-agency, per-file outputs
 
-Usage:
-  python src/fetch_usaspending.py --days 90 --outdir data [--no-detail] [--max-pages 4]
+Examples:
+  # NIH only (same as before)
+  python src/fetch_usaspending.py --days 90 --subtier "National Institutes of Health"
+
+  # NIH + ARPA-H
+  python src/fetch_usaspending.py --days 90 \
+    --subtier "National Institutes of Health" \
+    --subtier "Advanced Research Projects Agency for Health"
+
+  # DoD (toptier) + ONR (subtier)
+  python src/fetch_usaspending.py --days 90 \
+    --toptier "Department of Defense" \
+    --subtier "Office of Naval Research"
+
+Notes:
+- Uses /search/spending_by_transaction (fast), then optional per-award detail.
+- Writes CSV/JSON and top recipients per agency (slugged filenames).
 """
 
-import argparse, json, pathlib, sys, time, random
+import argparse, json, pathlib, sys, time, random, re
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -80,6 +91,21 @@ FRIENDLY_TXN = {
     "pop_state_code": "Place Of Performance State Code",
 }
 
+def slugify(s: str) -> str:
+    """Turn an agency/subtier name into a short slug for filenames."""
+    if not s:
+        return "unknown"
+    s = s.lower()
+    s = s.replace("&", "and")
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"\s+", "-", s.strip())
+    # Small alias touchups for nicer slugs
+    s = s.replace("national-institutes-of-health", "nih")
+    s = s.replace("advanced-research-projects-agency-for-health", "arpa-h")
+    s = s.replace("department-of-health-and-human-services", "hhs")
+    s = s.replace("department-of-defense", "dod")
+    return s
+
 def date_window(last_n_days: int) -> Tuple[str, str]:
     end = date.today()
     start = end - timedelta(days=last_n_days)
@@ -98,7 +124,7 @@ def make_session() -> requests.Session:
     s.mount("https://", adapter)
     s.headers.update({
         "Accept": "application/json",
-        "User-Agent": "nih-awards-tracker/txn/1.3 (+https://github.com/feldmangn/nih-awards-tracker)"
+        "User-Agent": "nih-awards-tracker/txn/1.4 (+https://github.com/feldmangn/nih-awards-tracker)"
     })
     return s
 
@@ -127,22 +153,30 @@ def _get_detail(s: requests.Session, award_internal_id: str, tries: int = 4, sle
             return {}
     return {}
 
-def fetch(days: int = 90, max_pages: Optional[int] = None, do_detail: bool = True) -> pd.DataFrame:
+def build_agency_filter(tier: str, name: str) -> Dict:
+    """Return the 'agencies' filter block for USAspending payload."""
+    tier = (tier or "").strip().lower()
+    if tier not in ("toptier", "subtier"):
+        raise ValueError(f"tier must be 'toptier' or 'subtier', got: {tier}")
+    return {"type": "awarding", "tier": tier, "name": name}
+
+def fetch_for_agency(tier: str, name: str, days: int = 90,
+                     max_pages: Optional[int] = None, do_detail: bool = True) -> pd.DataFrame:
+    """Fetch one agency (toptier or subtier) and return normalized DataFrame."""
+    agency_filter = build_agency_filter(tier, name)
     s = make_session()
     start, end = date_window(days)
     page = 1
     rows: List[Dict] = []
     printed_cols = False
 
-    # 1) Pull transactions FOR NIH DIRECTLY (Awarding + SUBTIER)
+    # 1) Pull transactions
     while True:
         payload = {
             "fields": TXN_FIELDS,
             "filters": {
                 "time_period": [{"start_date": start, "end_date": end}],
-                "agencies": [
-                    {"type": "awarding", "tier": "subtier", "name": "National Institutes of Health"},
-                ],
+                "agencies": [agency_filter],
                 "award_type_codes": ["A", "B", "C", "D"],  # Contracts & IDVs
             },
             "page": page,
@@ -153,7 +187,7 @@ def fetch(days: int = 90, max_pages: Optional[int] = None, do_detail: bool = Tru
         data = _post_txn(s, payload)
         results = data.get("results", []) or []
         if results and not printed_cols:
-            print("Txn columns:", sorted(list(results[0].keys())))
+            print(f"[{tier}/{name}] Txn columns:", sorted(list(results[0].keys())))
             printed_cols = True
         rows.extend(results)
 
@@ -166,7 +200,7 @@ def fetch(days: int = 90, max_pages: Optional[int] = None, do_detail: bool = Tru
         time.sleep(0.05)
 
     if not rows:
-        print("No NIH transactions found in window.")
+        print(f"[{tier}/{name}] No transactions found in window.")
         return pd.DataFrame(columns=COLS_OUT)
 
     df = pd.DataFrame(rows)
@@ -201,10 +235,10 @@ def fetch(days: int = 90, max_pages: Optional[int] = None, do_detail: bool = Tru
         # FAST PATH: no detail calls. Enough for map/chart/table.
         return base[COLS_OUT]
 
-    # 2) Enrich with detail (only NIH rows) — use generated_internal_id else internal_id else Award Id
+    # 2) Enrich with detail — use generated_internal_id else internal_id else Award Id
     gen_ids = df.get("generated_internal_id")
     int_ids = df.get("internal_id")
-    awd_ids = df.get("Award Id")  # final fallback; sometimes acceptable
+    awd_ids = df.get("Award Id")
 
     ids: List[Optional[str]] = []
     for i in range(len(df)):
@@ -267,22 +301,45 @@ def fetch(days: int = 90, max_pages: Optional[int] = None, do_detail: bool = Tru
 
     return base[COLS_OUT]
 
-def main(days: int = 90, outdir: str = "data", max_pages: Optional[int] = None, no_detail: bool = False) -> None:
-    out_dir = pathlib.Path(outdir); out_dir.mkdir(parents=True, exist_ok=True)
-    df = fetch(days=days, max_pages=max_pages, do_detail=not no_detail)
-
-    csv_path  = out_dir / f"nih_awards_last_{days}d.csv"
-    json_path = out_dir / f"nih_awards_last_{days}d.json"
+def write_outputs(df: pd.DataFrame, slug: str, label: str, out_dir: pathlib.Path, days: int) -> None:
+    csv_path  = out_dir / f"{slug}_awards_last_{days}d.csv"
+    json_path = out_dir / f"{slug}_awards_last_{days}d.json"
     df.to_csv(csv_path, index=False)
     df.to_json(json_path, orient="records")
 
     if not df.empty:
         agg = (df.groupby("Recipient Name", dropna=False)["Award Amount"]
                  .sum().reset_index().sort_values("Award Amount", ascending=False))
-        agg.to_csv(out_dir / f"nih_top_recipients_last_{days}d.csv", index=False)
-        print(f"Saved {len(df)} transactions across {agg.shape[0]} recipients.")
+        agg.to_csv(out_dir / f"{slug}_top_recipients_last_{days}d.csv", index=False)
+        print(f"[{label}] Saved {len(df)} transactions across {agg.shape[0]} recipients -> {csv_path.name}")
     else:
-        print("Saved 0 transactions (NIH, window).")
+        print(f"[{label}] Saved 0 transactions -> {csv_path.name}")
+
+def main(days: int = 90, outdir: str = "data",
+         max_pages: Optional[int] = None, no_detail: bool = False,
+         subtiers: Optional[List[str]] = None,
+         toptiers: Optional[List[str]] = None) -> None:
+
+    out_dir = pathlib.Path(outdir); out_dir.mkdir(parents=True, exist_ok=True)
+
+    tasks: List[Tuple[str, str]] = []
+    for n in (subtiers or []):
+        tasks.append(("subtier", n))
+    for n in (toptiers or []):
+        tasks.append(("toptier", n))
+
+    # Default (keep old behavior): NIH only, if nothing specified
+    if not tasks:
+        tasks = [("subtier", "National Institutes of Health")]
+
+    for tier, name in tasks:
+        label = f"{tier}/{name}"
+        slug  = slugify(name)
+        try:
+            df = fetch_for_agency(tier, name, days=days, max_pages=max_pages, do_detail=not no_detail)
+            write_outputs(df, slug, label, out_dir, days)
+        except Exception as e:
+            print(f"[{label}] ERROR:", e)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -290,9 +347,14 @@ if __name__ == "__main__":
     ap.add_argument("--outdir", type=str, default="data")
     ap.add_argument("--max-pages", type=int, default=None, help="Cap number of pages for testing")
     ap.add_argument("--no-detail", action="store_true", help="Skip /awards/{id} enrichment for speed")
+    ap.add_argument("--subtier", dest="subtiers", action="append",
+                    help="Awarding SUBTIER agency name (repeatable). Example: 'National Institutes of Health'")
+    ap.add_argument("--toptier", dest="toptiers", action="append",
+                    help="Awarding TOPTIER agency name (repeatable). Example: 'Department of Defense'")
     args = ap.parse_args()
     try:
-        main(days=args.days, outdir=args.outdir, max_pages=args.max_pages, no_detail=args.no_detail)
+        main(days=args.days, outdir=args.outdir, max_pages=args.max_pages, no_detail=args.no_detail,
+             subtiers=args.subtiers, toptiers=args.toptiers)
     except Exception as e:
         print("ERROR:", e)
         sys.exit(1)

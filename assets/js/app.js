@@ -1,9 +1,9 @@
 /* NIH Awards Tracker – app.js
+ * Agency-agnostic (NIH, ARPA-H, AHRQ, CMS, DoD components, EPA, DOE, etc.)
  * - Top recipients (All vs SB/8(a))
  * - US map w/ PSC & NAICS filters
- * - State drill-down (outline + county borders) + recipient points by ZIP
+ * - State drill-down + recipient points by ZIP
  * - Recent awards table + recent awardees table
- * - Robust header normalization & defensive guards
  */
 
 /* ================= config & helpers ================= */
@@ -18,8 +18,25 @@ let BASE = window.__NIH_BASEURL__ || "";
 const H = location.hostname;
 if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";
 
-// Prefer URLs injected from the page; fallback to BASE/data/...
-const U = window.APP_DATA_URLS || {};
+/** Build URLs if the page didn't set APP_DATA_URLS **/
+(function ensureDataUrls() {
+  const qs = new URLSearchParams(location.search);
+  const qsPrefix = (qs.get("agency") || "").trim();
+  const fmPrefix = (window.__AGENCY_PREFIX__ || "").trim();
+  const prefix = (fmPrefix || qsPrefix || "nih").toLowerCase();
+
+  if (!window.APP_DATA_URLS) window.APP_DATA_URLS = {};
+  const U = window.APP_DATA_URLS;
+  const DATA_DIR = `${BASE}/data`;
+
+  U.AWARDS           = U.AWARDS           || `${DATA_DIR}/${prefix}_awards_last_90d.csv`;
+  U.TOP_RECIP        = U.TOP_RECIP        || `${DATA_DIR}/${prefix}_top_recipients_last_90d.csv`;
+  U.TOP_RECIP_ENRICH = U.TOP_RECIP_ENRICH || `${DATA_DIR}/${prefix}_top_recipients_last_90d_enriched.csv`;
+
+  window.__AGENCY_PREFIX__ = prefix; // expose for other inline scripts if needed
+})();
+
+const U = window.APP_DATA_URLS;
 const DATA_DIR = `${BASE}/data`;
 
 const AWARDS_URL           = (U.AWARDS           || `${DATA_DIR}/nih_awards_last_90d.csv`)                  + bust();
@@ -211,15 +228,12 @@ function topRecipientsForState(awards, stateCode, pscPrefix, naicsPrefix, limit 
 
 /* ================= topojson + drilldown ================= */
 
-// TopoJSON sources (CDN)
 const US_ATLAS_STATES   = "https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json";
 const US_ATLAS_COUNTIES = "https://cdn.jsdelivr.net/npm/us-atlas@3/counties-10m.json";
 
-// Cache
 let _statesTopo = null, _countiesTopo = null;
 let _statesGeo  = null, _countiesGeo  = null;
 
-// Map state postal -> FIPS (2-digit)
 const STATE_FIPS = {
   AL:"01", AK:"02", AZ:"04", AR:"05", CA:"06", CO:"08", CT:"09", DE:"10", FL:"12",
   GA:"13", HI:"15", ID:"16", IL:"17", IN:"18", IA:"19", KS:"20", KY:"21", LA:"22",
@@ -459,6 +473,12 @@ async function render() {
 
   DATA.recipsAll = recipsAll;
 
+  // Sync Download buttons (if present)
+  const dlCsv  = $("dlCsv");
+  const dlJson = $("dlJson");
+  if (dlCsv)  dlCsv.href  = AWARDS_URL;
+  if (dlJson) dlJson.href = AWARDS_URL.replace(/\.csv(\?.*)?$/, ".json$1");
+
   // UI refs
   const topNInput  = $("topN");
   const tabAllBtn  = $("tab-all") || $("tabAll");
@@ -599,6 +619,16 @@ async function render() {
   const tbody = document.querySelector("#awardsTable tbody");
   let awardsSlice = 500;
 
+  // optional: NAICS filter for the raw table
+  const awardsNaicsInput = $("awardsNaics");
+  const awardsNaicsClear = $("awardsNaicsClear");
+
+  function rowPassesAwardsNaics(r) {
+    const q = (awardsNaicsInput?.value || "").trim();
+    if (!q) return true;
+    return String(r.naics || "").startsWith(q);
+  }
+
   function renderAwardsTable() {
     if (!thead || !tbody) return;
 
@@ -613,7 +643,9 @@ async function render() {
       <th>Careers</th>
     </tr>`;
 
-    tbody.innerHTML = DATA.awards.slice(0, awardsSlice).map((r) => `
+    const rows = DATA.awards.filter(rowPassesAwardsNaics).slice(0, awardsSlice);
+
+    tbody.innerHTML = rows.map((r) => `
       <tr>
         <td>${r.action_date ?? ""}</td>
         <td>${r.recipient_name ?? ""}</td>
@@ -627,7 +659,22 @@ async function render() {
     `).join("");
 
     const summary = $("summary");
-    if (summary) summary.textContent = `Rows shown: ${Math.min(awardsSlice, DATA.awards.length)} of ${DATA.awards.length}`;
+    if (summary) summary.textContent =
+      `Rows shown: ${Math.min(awardsSlice, rows.length)} of ${DATA.awards.filter(rowPassesAwardsNaics).length}`;
+  }
+
+  if (awardsNaicsInput) {
+    awardsNaicsInput.addEventListener("input", () => {
+      awardsSlice = 500;
+      renderAwardsTable();
+    });
+  }
+  if (awardsNaicsClear) {
+    awardsNaicsClear.addEventListener("click", () => {
+      if (awardsNaicsInput) awardsNaicsInput.value = "";
+      awardsSlice = 500;
+      renderAwardsTable();
+    });
   }
 
   renderAwardsTable();
@@ -635,9 +682,9 @@ async function render() {
   const showMoreBtn = $("showMore");
   if (showMoreBtn) {
     showMoreBtn.addEventListener("click", () => {
-      awardsSlice = Math.min(awardsSlice + 1000, DATA.awards.length);
+      awardsSlice = Math.min(awardsSlice + 1000, DATA.awards.filter(rowPassesAwardsNaics).length);
       renderAwardsTable();
-      if (awardsSlice >= DATA.awards.length) showMoreBtn.disabled = true;
+      if (awardsSlice >= DATA.awards.filter(rowPassesAwardsNaics).length) showMoreBtn.disabled = true;
     });
   }
 

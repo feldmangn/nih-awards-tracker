@@ -1,24 +1,85 @@
 title: NIH Awards Tracker
 description: Contracts & awards explorer
+
+# Project page settings (correct for feldmangn.github.io/nih-awards-tracker)
 url: "https://feldmangn.github.io"
 baseurl: "/nih-awards-tracker"
 
 remote_theme: hydecorp/hydejack
+
 plugins:
   - jekyll-remote-theme
   - jekyll-include-cache
   - jekyll-feed
+  - jekyll-seo-tag     # ✅ recommended
+  - jekyll-sitemap     # ✅ recommended
+
+# Nice URLs
+permalink: pretty
+
+# Markdown settings (GitHub-flavored)
+markdown: kramdown
+kramdown:
+  input: GFM
 
 # Hydejack basics
 hydejack:
   no_inline_css: false
-  theme_variant: "auto"   # light/dark toggle if supported
-  # add your social links, author, etc.
+  theme_variant: "auto"
 
-# Navigation (example)
+# Top navigation / sidebar
 menu:
   - title: Home
     url: /
-  - title: Data
-    url: /data/
 
+  # ===== HHS =====
+  - title: HHS
+    url: /hhs/
+    children:
+      - title: NIH
+        url: /hhs/nih/
+      - title: ARPA-H
+        url: /hhs/arpa-h/
+      - title: AHRQ
+        url: /hhs/ahrq/
+      - title: CMS
+        url: /hhs/cms/
+
+  # ===== DoD =====
+  - title: DoD
+    url: /dod/
+    children:
+      - title: Army
+        url: /dod/army/
+        children:
+          - title: USAMRDC
+            url: /dod/army/usamrdc/
+          - title: USACE ERDC
+            url: /dod/army/erdc/
+      - title: Navy
+        url: /dod/navy/
+        children:
+          - title: ONR
+            url: /dod/navy/onr/
+          - title: NAVWAR
+            url: /dod/navy/navwar/
+      - title: Air Force
+        url: /dod/air-force/
+        children:
+          - title: AFRL
+            url: /dod/air-force/afrl/
+      - title: DHA
+        url: /dod/dha/
+
+  # ===== DOE (example) =====
+  - title: DOE
+    url: /doe/
+    children:
+      - title: Office of Science
+        url: /doe/sc/
+      - title: ARPA-E
+        url: /doe/arpa-e/
+
+  # ===== EPA (example) =====
+  - title: EPA
+    url: /epa/
