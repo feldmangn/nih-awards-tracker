@@ -1,33 +1,3 @@
-title: NIH Awards Tracker
-description: Contracts & awards explorer
-
-# Project page settings (correct for feldmangn.github.io/nih-awards-tracker)
-url: "https://feldmangn.github.io"
-baseurl: "/nih-awards-tracker"
-
-remote_theme: hydecorp/hydejack
-
-plugins:
-  - jekyll-remote-theme
-  - jekyll-include-cache
-  - jekyll-feed
-  - jekyll-seo-tag     # ✅ recommended
-  - jekyll-sitemap     # ✅ recommended
-
-# Nice URLs
-permalink: pretty
-
-# Markdown settings (GitHub-flavored)
-markdown: kramdown
-kramdown:
-  input: GFM
-
-# Hydejack basics
-hydejack:
-  no_inline_css: false
-  theme_variant: "auto"
-
-# Top navigation / sidebar
 menu:
   - title: Home
     url: /
@@ -35,7 +5,7 @@ menu:
   # ===== HHS =====
   - title: HHS
     url: /hhs/
-    children:
+    menu:
       - title: NIH
         url: /hhs/nih/
       - title: ARPA-H
@@ -48,38 +18,38 @@ menu:
   # ===== DoD =====
   - title: DoD
     url: /dod/
-    children:
+    menu:
       - title: Army
         url: /dod/army/
-        children:
+        menu:
           - title: USAMRDC
             url: /dod/army/usamrdc/
           - title: USACE ERDC
             url: /dod/army/erdc/
       - title: Navy
         url: /dod/navy/
-        children:
+        menu:
           - title: ONR
             url: /dod/navy/onr/
           - title: NAVWAR
             url: /dod/navy/navwar/
       - title: Air Force
         url: /dod/air-force/
-        children:
+        menu:
           - title: AFRL
             url: /dod/air-force/afrl/
       - title: DHA
         url: /dod/dha/
 
-  # ===== DOE (example) =====
+  # ===== DOE =====
   - title: DOE
     url: /doe/
-    children:
+    menu:
       - title: Office of Science
         url: /doe/sc/
       - title: ARPA-E
         url: /doe/arpa-e/
 
-  # ===== EPA (example) =====
+  # ===== EPA =====
   - title: EPA
     url: /epa/
