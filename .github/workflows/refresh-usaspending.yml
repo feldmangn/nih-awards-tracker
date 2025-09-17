@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: refresh-usaspending
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,6 +19,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       - uses: actions/setup-python@v5
         with:
@@ -24,40 +29,37 @@ jobs:
         working-directory: ./nih-awards-tracker
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # for centroid build & any light data munging
-          pip install pgeocode pandas
+          pip install -r requirements.txt || true
+          pip install requests pandas pgeocode
 
-      # ---------- Configure which agencies to pull ----------
-      # Format: <tier>|<exact USAspending agency name>
-      # Tip: add/remove lines here as needed (names must match USAspending).
+      # ---------- Configure which agencies to pull (no heredoc!) ----------
       - name: Prepare agency list
         id: agencies
-        run: |
-          cat > agencies.list <<'EOF'
-          # HHS subtiers
-          subtier|National Institutes of Health
-          subtier|Advanced Research Projects Agency for Health
-          subtier|Agency for Healthcare Research and Quality
-          subtier|Centers for Medicare and Medicaid Services
-          # DoD (mix of top + subtiers)
-          toptier|Department of Defense
-          subtier|Office of Naval Research
-          subtier|Naval Information Warfare Systems Command
-          subtier|Air Force Research Laboratory
-          subtier|U.S. Army Medical Research and Development Command
-          subtier|U.S. Army Engineer Research and Development Center
-          subtier|Defense Health Agency
-          # DOE + subtiers
-          toptier|Department of Energy
-          subtier|Office of Science
-          subtier|Advanced Research Projects Agency-Energy
-          # EPA
-          toptier|Environmental Protection Agency
-          EOF
-          echo "Wrote agencies.list:"
-          cat agencies.list
         working-directory: ./nih-awards-tracker
+        env:
+          AGLIST: |
+            # HHS subtiers
+            subtier|National Institutes of Health
+            subtier|Advanced Research Projects Agency for Health
+            subtier|Agency for Healthcare Research and Quality
+            subtier|Centers for Medicare and Medicaid Services
+            # DoD (mix of top + subtiers)
+            toptier|Department of Defense
+            subtier|Office of Naval Research
+            subtier|Naval Information Warfare Systems Command
+            subtier|Air Force Research Laboratory
+            subtier|U.S. Army Medical Research and Development Command
+            subtier|U.S. Army Engineer Research and Development Center
+            subtier|Defense Health Agency
+            # DOE + subtiers
+            toptier|Department of Energy
+            subtier|Office of Science
+            subtier|Advanced Research Projects Agency-Energy
+            # EPA
+            toptier|Environmental Protection Agency
+        run: |
+          printf "%s\n" "$AGLIST" > agencies.list
+          echo "Wrote agencies.list:" && cat agencies.list
 
       # ---------- Pull USAspending for ALL agencies in one go ----------
       - name: Pull USAspending (last 90 days, multi-agency)
@@ -66,22 +68,24 @@ jobs:
           DAYS: "90"
         shell: bash
         run: |
-          # Build the argument list of repeated --subtier/--toptier flags
+          set -euo pipefail
           ARGS=()
           while IFS='|' read -r TIER NAME; do
-            # skip comments/blank lines
+            # trim leading/trailing spaces (defensive)
+            TIER="$(echo "${TIER:-}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+            NAME="$(echo "${NAME:-}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+            # skip comments/blank/headers
             [[ -z "$TIER" ]] && continue
             [[ "$TIER" == \#* ]] && continue
             if [[ "$TIER" == "toptier" ]]; then
               ARGS+=( --toptier "$NAME" )
-            else
+            elif [[ "$TIER" == "subtier" ]]; then
               ARGS+=( --subtier "$NAME" )
             fi
           done < agencies.list
 
           echo "Calling fetch_usaspending.py with flags:"
           printf ' %q' "${ARGS[@]}"; echo
-
           python src/fetch_usaspending.py --days "$DAYS" "${ARGS[@]}"
 
       # ---------- (Optional) Enrich top-recipients for EVERY agency ----------
@@ -103,7 +107,7 @@ jobs:
           python - <<'PY'
           import json, glob, pandas as pd
           from pathlib import Path
-          import pgeocode, re
+          import pgeocode
 
           files = sorted(glob.glob("data/*_awards_last_90d.csv"))
           if not files:
@@ -116,7 +120,6 @@ jobs:
               "primary place of performance zip code",
               "place of performance zip code",
           ]
-
           for f in files:
               try:
                   df = pd.read_csv(f, dtype=str)
@@ -127,11 +130,9 @@ jobs:
               if not zcol:
                   print(f"{f}: ZIP column not found; columns={list(df.columns)[:8]}...")
                   continue
-              z = (
-                  df[zcol].dropna().astype(str)
-                    .str.extract(r'(\d{5})')[0].dropna().tolist()
+              zips.update(
+                  df[zcol].dropna().astype(str).str.extract(r'(\d{5})')[0].dropna().tolist()
               )
-              zips.update(z)
 
           print(f"Unique ZIPs to geocode: {len(zips)} from {len(files)} CSV(s)")
           nomi = pgeocode.Nominatim('us')
@@ -149,22 +150,20 @@ jobs:
       # ---------- Publish to Pages (copies ALL generated CSV/JSON) ----------
       - name: Publish data for GitHub Pages
         run: |
+          set -e
           mkdir -p docs/data
           echo "Inner data dir:"
           ls -lh nih-awards-tracker/data || true
-
-          # copy ALL csv/json including the new zip_centroids.json
-          cp -f nih-awards-tracker/data/*.csv  docs/data/ || true
-          cp -f nih-awards-tracker/data/*.json docs/data/ || true
-
+          cp -f nih-awards-tracker/data/*.csv  docs/data/  || true
+          cp -f nih-awards-tracker/data/*.json docs/data/  || true
           date -u +"%Y-%m-%d %H:%M UTC" > docs/last_update.txt
           touch docs/.nojekyll
-
           echo "docs/data after copy:"
           ls -lh docs/data || true
 
       - name: Update README 'Last Updated' badge text
         run: |
+          set -e
           DATE=$(date -u +"%Y--%m--%d--%H:%M--UTC")
           if ! grep -q "last%20update-" README.md; then
             echo -e "\n![Last Updated](https://img.shields.io/badge/last%20update-$DATE-blue)\n" >> README.md
@@ -174,6 +173,7 @@ jobs:
 
       - name: Commit updated data, site, and README
         run: |
+          set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/data/* docs/last_update.txt docs/.nojekyll README.md \
