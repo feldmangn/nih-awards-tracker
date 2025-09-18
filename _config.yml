@@ -1,11 +1,28 @@
+# _config.yml (root)
+
+title: NIH Awards Tracker
+description: Contracts & awards explorer
+
+url: "https://feldmangn.github.io"
+baseurl: "/nih-awards-tracker"   # keep this for a project site
+
+remote_theme: hydecorp/hydejack
+plugins:
+  - jekyll-remote-theme
+  - jekyll-include-cache
+  - jekyll-feed
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+permalink: pretty
+
 menu:
   - title: Home
     url: /
 
-  # ===== HHS =====
   - title: HHS
     url: /hhs/
-    menu:
+    children:
       - title: NIH
         url: /hhs/nih/
       - title: ARPA-H
@@ -15,41 +32,38 @@ menu:
       - title: CMS
         url: /hhs/cms/
 
-  # ===== DoD =====
   - title: DoD
     url: /dod/
-    menu:
+    children:
       - title: Army
         url: /dod/army/
-        menu:
+        children:
           - title: USAMRDC
             url: /dod/army/usamrdc/
           - title: USACE ERDC
             url: /dod/army/erdc/
       - title: Navy
         url: /dod/navy/
-        menu:
+        children:
           - title: ONR
             url: /dod/navy/onr/
           - title: NAVWAR
             url: /dod/navy/navwar/
       - title: Air Force
         url: /dod/air-force/
-        menu:
+        children:
           - title: AFRL
             url: /dod/air-force/afrl/
       - title: DHA
         url: /dod/dha/
 
-  # ===== DOE =====
   - title: DOE
     url: /doe/
-    menu:
+    children:
       - title: Office of Science
         url: /doe/sc/
       - title: ARPA-E
         url: /doe/arpa-e/
 
-  # ===== EPA =====
   - title: EPA
     url: /epa/

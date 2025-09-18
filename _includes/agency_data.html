@@ -1,19 +1,4 @@
-{%- assign p = include.prefix | default: page.agency_prefix | default: 'nih' -%}
-
-<style>
-  .pill { padding:.45rem .8rem; border-radius:.6rem; border:1px solid #ddd; cursor:pointer; background:#fff; }
-  .pill:hover { background:#f6f6f6; }
-  .pill.active { background:#eef6ff; border-color:#c6e0ff; }
-  .muted { color:#666; }
-  .row { display:flex; gap:2rem; flex-wrap:wrap; align-items:flex-start; }
-  .card { padding:1rem; border:1px solid #e5e5e5; border-radius:.75rem; }
-  table.table { border-collapse: collapse; width: 100%; }
-  table.table thead th { background:#1f77b4; color:#fff; text-align:left; padding:.6rem .8rem; position:sticky; top:0; }
-  table.table tbody td { padding:.35rem .6rem; border-bottom:1px solid #eee; font-size:.95rem; }
-  table.table tbody tr:nth-child(even) { background:#f7fbff; }
-  th.sortable { cursor:pointer; user-select:none; }
-  th.sortable .dir { opacity:.6; font-size:.9em; margin-left:.25rem; }
-</style>
+<!-- styling (you can keep your existing CSS here) -->
 
 <div class="prose">
   <!-- Top recipients -->
@@ -58,7 +43,7 @@
     </div>
   </div>
 
-  <!-- Recent awards (raw) -->
+  <!-- Recent awards -->
   <h2 style="margin-top:2rem;">Recent awards (raw)</h2>
   <details id="awardsPanel" class="card" style="padding:0;">
     <summary style="list-style:none; padding:1rem; cursor:pointer; display:flex; align-items:center; gap:.5rem; border-bottom:1px solid #eee;">
@@ -66,19 +51,12 @@
       <strong>Show / hide recent awards</strong>
       <span id="summary" class="muted" style="margin-left:auto;"></span>
     </summary>
-
     <div style="padding:1rem;">
       <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem;">
-        <!-- Download links auto-point to this agency via Liquid -->
-        <a class="pill" href="{{ '/data/' | relative_url }}{{ p }}_awards_last_90d.csv">Download CSV</a>
-        <a class="pill" href="{{ '/data/' | relative_url }}{{ p }}_awards_last_90d.json">Download JSON</a>
+        <a id="dlCsv"  class="pill" href="#">Download CSV</a>
+        <a id="dlJson" class="pill" href="#">Download JSON</a>
         <button id="showMore" class="pill">Show more rows</button>
-
-        <span class="muted" style="margin-left:.75rem;">Filter NAICS:</span>
-        <input id="awardsNaics" placeholder="e.g. 541 or 541714" style="padding:.35rem .5rem; width:12rem;">
-        <button id="awardsNaicsClear" class="pill">Clear</button>
       </div>
-
       <div style="overflow:auto;">
         <table id="awardsTable" class="table" style="min-width:1000px;">
           <thead></thead>
@@ -88,7 +66,7 @@
     </div>
   </details>
 
-  <!-- Recent awardees (aggregated) -->
+  <!-- Recent awardees -->
   <h2 style="margin-top:2rem;">Recent awardees (top recipients by total)</h2>
   <div class="card">
     <div id="awardeesSummary" class="muted" style="margin:.5rem 0;"></div>
@@ -103,21 +81,31 @@
   <div id="debug"></div>
 </div>
 
-<!-- Libs (safe to include here so the include is self-contained) -->
+<!-- libs -->
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
 
-<!-- Baseurl + per-agency data URLs -->
+<!-- baseurl -->
+<script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
+
+<!-- data URLs for this agency -->
 <script>
-  window.__NIH_BASEURL__ = "{{ site.baseurl }}";
-  window.APP_DATA_URLS = {
-    AWARDS: "{{ '/data/' | relative_url }}{{ p }}_awards_last_90d.csv",
-    TOP_RECIP: "{{ '/data/' | relative_url }}{{ p }}_top_recipients_last_90d.csv",
-    TOP_RECIP_ENRICH: "{{ '/data/' | relative_url }}{{ p }}_top_recipients_last_90d_enriched.csv"
-  };
+  (function () {
+    const prefix = "{{ include.prefix | default: 'nih' }}";
+    const base   = "{{ '/data/' | relative_url }}";
+    window.APP_DATA_URLS = {
+      AWARDS:           base + prefix + "_awards_last_90d.csv",
+      TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
+      TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
+    };
+    // Point download links at the right files
+    const csvA  = document.getElementById('dlCsv');
+    const jsonA = document.getElementById('dlJson');
+    if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
+    if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
+  })();
 </script>
 
-<!-- Your app -->
+<!-- your app -->
 <script src="{{ '/assets/js/app.js' | relative_url }}"></script>
-
