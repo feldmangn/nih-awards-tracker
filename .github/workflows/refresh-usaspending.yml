@@ -148,18 +148,19 @@ jobs:
           PY
 
       # ---------- Publish to Pages (copies ALL generated CSV/JSON) ----------
-      - name: Publish data for GitHub Pages
+      - name: Publish data for GitHub Pages (root)
         run: |
-          set -e
-          mkdir -p docs/data
+          mkdir -p data
           echo "Inner data dir:"
           ls -lh nih-awards-tracker/data || true
-          cp -f nih-awards-tracker/data/*.csv  docs/data/  || true
-          cp -f nih-awards-tracker/data/*.json docs/data/  || true
-          date -u +"%Y-%m-%d %H:%M UTC" > docs/last_update.txt
-          touch docs/.nojekyll
-          echo "docs/data after copy:"
-          ls -lh docs/data || true
+
+          #copy ALL generated csv/json
+          cp -f nih-awards-tracker/data/*.csv  data/ || true
+          cp -f nih-awards-tracker/data/*.json data/ || true
+          date -u +"%Y-%m-%d %H:%M UTC" > last_update.txt
+          echo "data/ after copy:"
+          ls -lh data || true
+
 
       - name: Update README 'Last Updated' badge text
         run: |
@@ -176,7 +177,7 @@ jobs:
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/data/* docs/last_update.txt docs/.nojekyll README.md \
-                  nih-awards-tracker/data/*.csv nih-awards-tracker/data/*.json || true
+          git add data/* last_update.txt README.md nih-awards-tracker/data/*.csv nih-awards-tracker/data/*.json || true
+
           git commit -m "chore: refresh multi-agency data, centroids & timestamps" || echo "No changes"
           git push
