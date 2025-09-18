@@ -11,3 +11,4 @@ Welcome! Explore recent federal contract awards and recipients.
 - **DoD → [Navy → ONR]({{ '/dod/navy/onr/' | relative_url }})**
 - **DoD → [Air Force → AFRL]({{ '/dod/air-force/afrl/' | relative_url }})**
 - **EPA → [EPA]({{ '/epa/' | relative_url }})**
+{% include expand_sidebar.html %}

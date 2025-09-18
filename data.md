@@ -183,3 +183,4 @@ permalink: /data/
 <!-- 4) your app (after all configs/libs) -->
 <script src="{{ '/assets/js/app.js' | relative_url }}"></script>
 
+{% include expand_sidebar.html %}

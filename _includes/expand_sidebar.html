@@ -1,0 +1,80 @@
+<style>
+  /* simple styling for nested links */
+  .nj-submenu { display:none; margin:.25rem 0 0 1rem; list-style:none; padding:0; }
+  .nj-submenu a { display:block; padding:.15rem 0; opacity:.95; }
+  .nj-has-children > a::after {
+    content: "▸"; float: right; opacity:.6; transform: translateY(1px);
+  }
+  .nj-open > a::after { content: "▾"; }
+</style>
+
+<script>
+(function () {
+  const base = "{{ site.baseurl | default: '' }}";
+
+  const groups = [
+    {
+      label: "HHS", href: base + "/hhs/",
+      children: [
+        {label:"NIH", href: base + "/hhs/nih/"},
+        {label:"ARPA-H", href: base + "/hhs/arpa-h/"},
+        {label:"AHRQ", href: base + "/hhs/ahrq/"},
+        {label:"CMS", href: base + "/hhs/cms/"},
+      ]
+    },
+    {
+      label: "DoD", href: base + "/dod/",
+      children: [
+        {label:"Army · USAMRDC", href: base + "/dod/army/usamrdc/"},
+        {label:"Army · USACE ERDC", href: base + "/dod/army/erdc/"},
+        {label:"Navy · ONR", href: base + "/dod/navy/onr/"},
+        {label:"Navy · NAVWAR", href: base + "/dod/navy/navwar/"},
+        {label:"Air Force · AFRL", href: base + "/dod/air-force/afrl/"},
+        {label:"DHA", href: base + "/dod/dha/"},
+      ]
+    },
+  ];
+
+  function inject(group) {
+    const sidebar =
+      document.querySelector('.sidebar') ||
+      document.querySelector('.sidebar-sticky') ||
+      document.querySelector('aside');
+
+    if (!sidebar) return;
+
+    const link = sidebar.querySelector(`a[href="${group.href}"]`);
+    if (!link) return;
+
+    const li = link.closest('li') || link.parentElement;
+    if (!li) return;
+    li.classList.add('nj-has-children');
+
+    const ul = document.createElement('ul');
+    ul.className = 'nj-submenu';
+    group.children.forEach(c => {
+      const li2 = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = c.href; a.textContent = c.label;
+      li2.appendChild(a); ul.appendChild(li2);
+    });
+    li.appendChild(ul);
+
+    function open()  { li.classList.add('nj-open');  ul.style.display = 'block'; }
+    function close() { li.classList.remove('nj-open'); ul.style.display = 'none'; }
+
+    // hover open/close
+    li.addEventListener('mouseenter', open);
+    li.addEventListener('mouseleave', close);
+
+    // click toggles instead of navigating to the parent
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const isOpen = ul.style.display === 'block';
+      (isOpen ? close : open)();
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', () => groups.forEach(inject));
+})();
+</script>
