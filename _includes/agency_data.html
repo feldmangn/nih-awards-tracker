@@ -1,5 +1,16 @@
-<!-- styling (you can keep your existing CSS here) -->
+{%- comment -%}
+  _includes/agency_data.html
+  Usage from a page:
+    ---
+    layout: page
+    title: NIH
+    permalink: /hhs/nih/
+    agency_prefix: nih
+    ---
+    {% include agency_data.html prefix=page.agency_prefix %}
+{%- endcomment -%}
 
+<!-- ========= UI ========= -->
 <div class="prose">
   <!-- Top recipients -->
   <div class="card" style="margin-bottom:1rem;">
@@ -43,7 +54,7 @@
     </div>
   </div>
 
-  <!-- Recent awards -->
+  <!-- Recent awards (raw) -->
   <h2 style="margin-top:2rem;">Recent awards (raw)</h2>
   <details id="awardsPanel" class="card" style="padding:0;">
     <summary style="list-style:none; padding:1rem; cursor:pointer; display:flex; align-items:center; gap:.5rem; border-bottom:1px solid #eee;">
@@ -66,7 +77,7 @@
     </div>
   </details>
 
-  <!-- Recent awardees -->
+  <!-- Recent awardees (aggregated) -->
   <h2 style="margin-top:2rem;">Recent awardees (top recipients by total)</h2>
   <div class="card">
     <div id="awardeesSummary" class="muted" style="margin:.5rem 0;"></div>
@@ -81,31 +92,35 @@
   <div id="debug"></div>
 </div>
 
-<!-- libs -->
+<!-- ========= Libraries (must be before app.js) ========= -->
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
 
-<!-- baseurl -->
+<!-- ========= Jekyll baseurl -> JS ========= -->
 <script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
 
-<!-- data URLs for this agency -->
+<!-- ========= Build data URLs for THIS agency (before app.js) ========= -->
 <script>
   (function () {
-    const prefix = "{{ include.prefix | default: 'nih' }}";
-    const base   = "{{ '/data/' | relative_url }}";
+    // prefix comes from the include call; default to 'nih' if omitted
+    var prefix = "{{ include.prefix | strip | default: 'nih' }}";
+    var base   = "{{ '/data/' | relative_url }}";
+
+    // Expose exact file paths for app.js
     window.APP_DATA_URLS = {
-      AWARDS:           base + prefix + "_awards_last_90d.csv",
-      TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
-      TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
+      AWARDS:            base + prefix + "_awards_last_90d.csv",
+      TOP_RECIP:         base + prefix + "_top_recipients_last_90d.csv",
+      TOP_RECIP_ENRICH:  base + prefix + "_top_recipients_last_90d_enriched.csv"
     };
-    // Point download links at the right files
-    const csvA  = document.getElementById('dlCsv');
-    const jsonA = document.getElementById('dlJson');
+
+    // Update download links
+    var csvA  = document.getElementById('dlCsv');
+    var jsonA = document.getElementById('dlJson');
     if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
     if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
   })();
 </script>
 
-<!-- your app -->
+<!-- ========= App code (reads window.APP_DATA_URLS) ========= -->
 <script src="{{ '/assets/js/app.js' | relative_url }}"></script>

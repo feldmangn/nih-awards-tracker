@@ -39,9 +39,18 @@ if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";
 const U = window.APP_DATA_URLS;
 const DATA_DIR = `${BASE}/data`;
 
-const AWARDS_URL           = (U.AWARDS           || `${DATA_DIR}/nih_awards_last_90d.csv`)                  + bust();
-const TOP_RECIP_URL        = (U.TOP_RECIP        || `${DATA_DIR}/nih_top_recipients_last_90d.csv`)          + bust();
-const TOP_RECIP_ENRICH_URL = (U.TOP_RECIP_ENRICH || `${DATA_DIR}/nih_top_recipients_last_90d_enriched.csv`) + bust();
+// window.APP_DATA_URLS must be set by agency_data.html BEFORE app.js loads
+const U = window.APP_DATA_URLS || {};
+if (!U.AWARDS || !U.TOP_RECIP) {
+  throw new Error(
+    "APP_DATA_URLS missing. Ensure {% include agency_data.html prefix=... %} runs before app.js"
+  );
+}
+
+const AWARDS_URL           = `${U.AWARDS}${bust()}`;
+const TOP_RECIP_URL        = `${U.TOP_RECIP}${bust()}`;
+// Enriched is optional; fall back to the basic top recipients for THIS agency
+const TOP_RECIP_ENRICH_URL = `${(U.TOP_RECIP_ENRICH || U.TOP_RECIP)}${bust()}`;
 const ZIP_CENTROIDS_URL    = `${DATA_DIR}/zip_centroids.json${bust()}`;
 
 // Expose for DevTools
