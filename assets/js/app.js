@@ -45,23 +45,26 @@ const DATA_DIR = `${BASE}/data`;
 
 
 // ---- REQUIRED: agency_data.html must set window.APP_DATA_URLS ----
-const U = window.APP_DATA_URLS || {};
-if (!U.AWARDS || !U.TOP_RECIP) {
-  throw new Error(
-    "APP_DATA_URLS missing. Ensure `{% include agency_data.html prefix=... %}` runs before app.js on this page."
-  );
+// ---- REQUIRED: agency_data.html must set window.APP_DATA_URLS ----
+let AWARDS_URL, TOP_RECIP_URL, TOP_RECIP_ENRICH_URL;
+const ZIP_CENTROIDS_URL = `${DATA_DIR}/zip_centroids.json${bust()}`;
+
+function setUrlsFromAPP() {
+  const U = window.APP_DATA_URLS || {};
+  if (!U.AWARDS || !U.TOP_RECIP) {
+    throw new Error("APP_DATA_URLS missing. Ensure `{% include agency_data.html prefix=... %}` runs before app.js on this page.");
+  }
+  AWARDS_URL           = `${U.AWARDS}${bust()}`;
+  TOP_RECIP_URL        = `${U.TOP_RECIP}${bust()}`;
+  TOP_RECIP_ENRICH_URL = `${(U.TOP_RECIP_ENRICH || U.TOP_RECIP)}${bust()}`;
 }
+setUrlsFromAPP();
 
-const AWARDS_URL           = `${U.AWARDS}${bust()}`;
-const TOP_RECIP_URL        = `${U.TOP_RECIP}${bust()}`;
-const TOP_RECIP_ENRICH_URL = `${(U.TOP_RECIP_ENRICH || U.TOP_RECIP)}${bust()}`;
-const ZIP_CENTROIDS_URL    = `${DATA_DIR}/zip_centroids.json${bust()}`;
-
-// Expose for DevTools
-window.AWARDS_URL           = AWARDS_URL;
-window.TOP_RECIP_URL        = TOP_RECIP_URL;
-window.TOP_RECIP_ENRICH_URL = TOP_RECIP_ENRICH_URL;
-window.ZIP_CENTROIDS_URL    = ZIP_CENTROIDS_URL;
+// expose for DevTools (optional)
+window.AWARDS_URL = () => AWARDS_URL;
+window.TOP_RECIP_URL = () => TOP_RECIP_URL;
+window.TOP_RECIP_ENRICH_URL = () => TOP_RECIP_ENRICH_URL;
+window.ZIP_CENTROIDS_URL = ZIP_CENTROIDS_URL;
 
 const fmtUSD = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
@@ -720,6 +723,25 @@ async function render() {
   window._awards    = DATA.awards;
   window._awardsPos = DATA.awardsPos;
 }
+// Allow page includes to switch agency and force a re-render without reloading the whole site
+window.__AWARDS_RERENDER__ = async function () {
+  try {
+    setUrlsFromAPP();                        // pick up the new /data/<agency>_*.csv
+    // wipe containers so we don't double-render
+    document.getElementById('chart')?.replaceChildren();
+    document.getElementById('map')?.replaceChildren();
+    document.querySelector('#awardsTable thead')?.replaceChildren();
+    document.querySelector('#awardsTable tbody')?.replaceChildren();
+    document.querySelector('#awardeesTable thead')?.replaceChildren();
+    document.querySelector('#awardeesTable tbody')?.replaceChildren();
+    // reset in-memory data
+    window.__DATA__ = { awards: [], awardsPos: [], recipsAll: [] };
+    // run render again to fetch EPA (or whichever) files
+    await render();
+  } catch (e) {
+    console.error(e);
+  }
+};
 
 /* ================= run ================= */
 

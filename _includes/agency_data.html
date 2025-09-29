@@ -113,7 +113,27 @@
     TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
     TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
   };
+  <script>
+    (function () {
+      var prefix = "{{ include.prefix | strip | default: 'nih' }}";
+      var base   = "{{ '/data/' | relative_url }}";
+      window.APP_DATA_URLS = {
+        AWARDS:           base + prefix + "_awards_last_90d.csv",
+        TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
+        TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
+      };
+      // Update download links
+      var csvA  = document.getElementById('dlCsv');
+      var jsonA = document.getElementById('dlJson');
+      if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
+      if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
 
+      // <<< IMPORTANT: tell the app to switch datasets on navigation >>>
+      if (window.__AWARDS_RERENDER__) {
+        window.__AWARDS_RERENDER__();
+      }
+    })();
+  </script>
   // Wire download links if present
   var csvA  = document.getElementById('dlCsv');
   var jsonA = document.getElementById('dlJson');
