@@ -1,13 +1,12 @@
 {%- comment -%}
-  _includes/agency_data.html
-  Usage from a page:
-    ---
-    layout: page
-    title: NIH
-    permalink: /hhs/nih/
-    agency_prefix: nih
-    ---
-    {% include agency_data.html prefix=page.agency_prefix %}
+Usage from a page:
+---
+layout: page
+title: EPA
+permalink: /epa/
+agency_prefix: epa
+---
+{% include agency_data.html prefix=page.agency_prefix %}
 {%- endcomment -%}
 
 <!-- ========= UI ========= -->
@@ -67,6 +66,11 @@
         <a id="dlCsv"  class="pill" href="#">Download CSV</a>
         <a id="dlJson" class="pill" href="#">Download JSON</a>
         <button id="showMore" class="pill">Show more rows</button>
+
+        <!-- Optional NAICS filter for the raw table -->
+        <span class="muted" style="margin-left:.75rem;">Filter NAICS:</span>
+        <input id="awardsNaics" placeholder="e.g. 541 or 541714" style="padding:.35rem .5rem; width:12rem;">
+        <button id="awardsNaicsClear" class="pill">Clear</button>
       </div>
       <div style="overflow:auto;">
         <table id="awardsTable" class="table" style="min-width:1000px;">
@@ -92,55 +96,33 @@
   <div id="debug"></div>
 </div>
 
-<!-- Libraries (must be before app.js) -->
+<!-- ========= Libraries (must be before app.js) ========= -->
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
 
-<!-- Jekyll baseurl -> JS -->
+<!-- ========= Jekyll baseurl -> JS ========= -->
 <script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
 
-<!-- Build data URLs for THIS agency (before app.js) -->
+<!-- ========= Build data URLs for THIS agency (before app.js runs) ========= -->
 <script>
-(function () {
-  var prefix = "{{ include.prefix | default: 'nih' | strip | downcase }}";
-  var base   = "{{ '/data/' | relative_url }}";
+  (function () {
+    var prefix = "{{ include.prefix | strip | downcase | default: 'nih' }}";
+    var base   = "{{ '/data/' | relative_url }}";
 
-  window.__AGENCY_PREFIX__ = prefix; // optional, handy for debugging
+    window.APP_DATA_URLS = {
+      AWARDS:           base + prefix + "_awards_last_90d.csv",
+      TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
+      TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
+    };
 
-  window.APP_DATA_URLS = {
-    AWARDS:           base + prefix + "_awards_last_90d.csv",
-    TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
-    TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
-  };
-  <script>
-    (function () {
-      var prefix = "{{ include.prefix | strip | default: 'nih' }}";
-      var base   = "{{ '/data/' | relative_url }}";
-      window.APP_DATA_URLS = {
-        AWARDS:           base + prefix + "_awards_last_90d.csv",
-        TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
-        TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
-      };
-      // Update download links
-      var csvA  = document.getElementById('dlCsv');
-      var jsonA = document.getElementById('dlJson');
-      if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
-      if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
+    // Point the download links at this agency’s files
+    var csvA  = document.getElementById('dlCsv');
+    var jsonA = document.getElementById('dlJson');
+    if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
+    if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
 
-      // <<< IMPORTANT: tell the app to switch datasets on navigation >>>
-      if (window.__AWARDS_RERENDER__) {
-        window.__AWARDS_RERENDER__();
-      }
-    })();
-  </script>
-  // Wire download links if present
-  var csvA  = document.getElementById('dlCsv');
-  var jsonA = document.getElementById('dlJson');
-  if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
-  if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
-})();
+    // Tell the app to (re)render with these URLs (works after PJAX nav)
+    if (window.__AWARDS_RERENDER__) window.__AWARDS_RERENDER__();
+  })();
 </script>
-
-<!-- App code (reads window.APP_DATA_URLS) -->
-<script src="{{ '/assets/js/app.js' | relative_url }}" defer data-no-instant></script>

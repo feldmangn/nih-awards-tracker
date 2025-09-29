@@ -1,54 +1,23 @@
-/* NIH Awards Tracker – app.js
- * Agency-agnostic (NIH, ARPA-H, AHRQ, CMS, DoD components, EPA, DOE, etc.)
+/* NIH Awards Tracker – app.js (agency-agnostic)
  * - Top recipients (All vs SB/8(a))
- * - US map w/ PSC & NAICS filters
- * - State drill-down + recipient points by ZIP
+ * - US map + PSC/NAICS filters, state drilldown + ZIP points
  * - Recent awards table + recent awardees table
  */
 
 /* ================= config & helpers ================= */
-// Prevent double-init when Hydejack swaps pages
-if (window.__AWARDS_APP_INIT__) { console.debug('awards app already initialized; skip'); /* bail out */ throw new Error('SKIP_INIT'); }
-window.__AWARDS_APP_INIT__ = true;
-
-
 const DEBUG = false;
 const debug = (m, ...rest) => { if (DEBUG) console.log(m, ...rest); };
 const bust = () => `?t=${Date.now()}`;
 
-// Base URL from Jekyll; ignore it in Codespaces/local dev
 let BASE = window.__NIH_BASEURL__ || "";
 const H = location.hostname;
 if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";
 const DATA_DIR = `${BASE}/data`;
 
-// ---- Bootstrap APP_DATA_URLS if the page didn't set them ----
-(function ensureDataUrls() {
-  let BASE = window.__NIH_BASEURL__ || "";
-  const H = location.hostname;
-  if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";
-  const DATA_DIR = `${BASE}/data`;
-
-  // Read <div id="agency-root" data-prefix="..."> set in agency_data.html
-  const domPrefix = document.getElementById('agency-root')?.dataset.prefix?.trim().toLowerCase();
-  const qsPrefix  = new URLSearchParams(location.search).get('agency')?.trim().toLowerCase();
-  const prefix    = domPrefix || qsPrefix || 'nih';  // fallback if missing
-
-  if (!window.APP_DATA_URLS) window.APP_DATA_URLS = {
-    AWARDS:           `${DATA_DIR}/${prefix}_awards_last_90d.csv`,
-    TOP_RECIP:        `${DATA_DIR}/${prefix}_top_recipients_last_90d.csv`,
-    TOP_RECIP_ENRICH: `${DATA_DIR}/${prefix}_top_recipients_last_90d_enriched.csv`,
-  };
-
-  window.__AGENCY_PREFIX__ = prefix;
-})();
-
-
-// ---- REQUIRED: agency_data.html must set window.APP_DATA_URLS ----
-// ---- REQUIRED: agency_data.html must set window.APP_DATA_URLS ----
 let AWARDS_URL, TOP_RECIP_URL, TOP_RECIP_ENRICH_URL;
 const ZIP_CENTROIDS_URL = `${DATA_DIR}/zip_centroids.json${bust()}`;
 
+/** Read window.APP_DATA_URLS (set by agency_data.html) and build URLs */
 function setUrlsFromAPP() {
   const U = window.APP_DATA_URLS || {};
   if (!U.AWARDS || !U.TOP_RECIP) {
@@ -60,34 +29,27 @@ function setUrlsFromAPP() {
 }
 setUrlsFromAPP();
 
-// expose for DevTools (optional)
-window.AWARDS_URL = () => AWARDS_URL;
-window.TOP_RECIP_URL = () => TOP_RECIP_URL;
+// Expose for quick debugging
+window.AWARDS_URL           = () => AWARDS_URL;
+window.TOP_RECIP_URL        = () => TOP_RECIP_URL;
 window.TOP_RECIP_ENRICH_URL = () => TOP_RECIP_ENRICH_URL;
-window.ZIP_CENTROIDS_URL = ZIP_CENTROIDS_URL;
+window.ZIP_CENTROIDS_URL    = ZIP_CENTROIDS_URL;
 
-const fmtUSD = (n) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
-    .format(+n || 0);
-
-const toNum = (v) =>
-  typeof v === "number" ? v : Number(String(v ?? "").replace(/,/g, "")) || 0;
-
-const careersUrl = (name) =>
-  `https://www.google.com/search?q=${encodeURIComponent(`${name} careers jobs`)}`;
-
+const fmtUSD = (n) => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(+n||0);
+const toNum  = (v) => typeof v === "number" ? v : Number(String(v ?? "").replace(/,/g, "")) || 0;
+const careersUrl = (name) => `https://www.google.com/search?q=${encodeURIComponent(`${name} careers jobs`)}`;
 const $ = (id) => document.getElementById(id);
 
 // Global UI state
-window.MAP_MODE       = window.MAP_MODE       ?? "us";   // "us" | "state"
-window.CURRENT_STATE  = window.CURRENT_STATE  ?? null;   // 2-letter postal
-window.POINT_TRACE_ID = window.POINT_TRACE_ID ?? null;   // Plotly trace index
+window.MAP_MODE       = window.MAP_MODE       ?? "us";
+window.CURRENT_STATE  = window.CURRENT_STATE  ?? null;
+window.POINT_TRACE_ID = window.POINT_TRACE_ID ?? null;
 
-// Data bucket so helpers can access after render initializes it
+// Data bucket
 window.__DATA__ = window.__DATA__ || { awards: [], awardsPos: [], recipsAll: [] };
 const DATA = window.__DATA__;
 
-/* ---- Precomputed ZIP centroids (no live geocoding) ---- */
+/* ---- ZIP centroids (precomputed) ---- */
 let ZIPS = null;
 async function loadZipCentroids() {
   if (ZIPS) return ZIPS;
@@ -103,7 +65,6 @@ async function loadZipCentroids() {
 }
 
 /* ================= CSV loading ================= */
-
 async function loadCSV(url) {
   const res = await fetch(url, { cache: "no-store" });
   debug("fetch", url, "->", res.status);
@@ -113,48 +74,35 @@ async function loadCSV(url) {
     Papa.parse(text, { header: true, dynamicTyping: true, complete: (r) => resolve(r.data) })
   );
 }
-
-// Prefer enriched; fall back to basic top-recipients for THIS agency
 async function loadRecipientsOrFallback() {
   try { return await loadCSV(TOP_RECIP_ENRICH_URL); } catch (e) { debug(e.message); }
   try { return await loadCSV(TOP_RECIP_URL);        } catch (e) { debug(e.message); }
   return null;
 }
 
-/* ================= SB/8(a) detection ================= */
-
+/* ================= SB/8(a) helpers ================= */
 const SB_PATTERNS = [
-  /8\(?a\)?/i,
-  /small\s*business/i,
-  /\bSBA\b/i, /\bSDB\b/i,
-  /women[-\s]?owned/i, /\bWOSB\b|\bEDWOSB\b/i,
-  /\bHUBZone\b/i,
+  /8\(?a\)?/i, /small\s*business/i, /\bSBA\b/i, /\bSDB\b/i,
+  /women[-\s]?owned/i, /\bWOSB\b|\bEDWOSB\b/i, /\bHUBZone\b/i,
   /service[-\s]?disabled/i, /veteran/i,
 ];
-
 function getSetAsideFromRow(_orig, lowerRow) {
   const candidates = [
-    "type of set aside",
-    "contracting officer business size determination",
-    "business size",
+    "type of set aside", "contracting officer business size determination", "business size",
   ];
   for (const k of candidates) if (k in lowerRow) return lowerRow[k];
   const loose = Object.keys(lowerRow).find((k) => /set.?aside|business.*size/.test(k));
   return loose ? lowerRow[loose] : null;
 }
-
 function isSmallBusinessSetAside(text) {
   if (!text) return false;
-  const s = String(text);
-  return SB_PATTERNS.some((rx) => rx.test(s));
+  return SB_PATTERNS.some((rx) => rx.test(String(text)));
 }
 
-/* ================= normalization helpers ================= */
-
+/* ================= normalization ================= */
 function normalizeAwardRow(row) {
-  // lowercase-keyed copy to match title-case headers
   const lower = {};
-  for (const [k, v] of Object.entries(row || {})) lower[String(k || "").toLowerCase()] = v;
+  for (const [k, v] of Object.entries(row||{})) lower[String(k||"").toLowerCase()] = v;
 
   const action_date = lower["action date"] ?? lower["action_date"] ?? lower["actiondate"] ?? null;
   const recipient   = (lower["recipient name"] ?? lower["recipient_name"] ?? "").trim();
@@ -163,7 +111,7 @@ function normalizeAwardRow(row) {
 
   const stateCode   = (lower["place of performance state code"] ??
                        lower["primary place of performance state code"] ?? "")
-                      .toString().slice(0, 2).toUpperCase();
+                      .toString().slice(0,2).toUpperCase();
   const stateName   = lower["place of performance state name"] ??
                       lower["primary place of performance"] ?? "";
 
@@ -172,7 +120,7 @@ function normalizeAwardRow(row) {
   const zipRaw = lower["place of performance zip code"] ??
                  lower["primary place of performance zip code"] ??
                  lower["place of performance zip code (+4)"] ?? "";
-  const zip5   = String(zipRaw).slice(0, 5);
+  const zip5   = String(zipRaw).slice(0,5);
 
   const lat = lower["latitude"]  != null ? +lower["latitude"]  : null;
   const lon = lower["longitude"] != null ? +lower["longitude"] : null;
@@ -185,47 +133,32 @@ function normalizeAwardRow(row) {
   const setAside  = getSetAsideFromRow(row, lower);
 
   return {
-    action_date,
-    recipient_name: recipient,
-    award_amount: amount,
-    piid,
-    set_aside: setAside,
-    state: stateCode,
-    state_name: stateName,
-    pop_city: city,
-    pop_zip5: zip5,
-    lat,
-    lon,
-    psc,
-    psc_desc: pscDesc,
-    naics,
-    naics_desc: naicsDesc,
+    action_date, recipient_name: recipient, award_amount: amount, piid,
+    set_aside: setAside, state: stateCode, state_name: stateName,
+    pop_city: city, pop_zip5: zip5, lat, lon, psc, psc_desc: pscDesc, naics, naics_desc: naicsDesc,
   };
 }
 
-/* ================= map aggregation / filters ================= */
-
+/* ================= filters/aggregation ================= */
 function passesCodeFilters(r, pscPrefix, naicsPrefix) {
-  const p = (pscPrefix || "").trim().toUpperCase();
-  const n = (naicsPrefix || "").trim();
-  const pscOk   = !p || (r.psc && String(r.psc).toUpperCase().startsWith(p));
+  const p = (pscPrefix||"").trim().toUpperCase();
+  const n = (naicsPrefix||"").trim();
+  const pscOk   = !p || (r.psc   && String(r.psc).toUpperCase().startsWith(p));
   const naicsOk = !n || (r.naics && String(r.naics).startsWith(n));
   return pscOk && naicsOk;
 }
-
 function aggregateByState(awards, metric, pscPrefix, naicsPrefix) {
   const by = {};
   for (const r of awards) {
     if (!r.state) continue;
     if (!passesCodeFilters(r, pscPrefix, naicsPrefix)) continue;
-    if (!(r.state in by)) by[r.state] = { amount: 0, count: 0 };
+    if (!by[r.state]) by[r.state] = { amount: 0, count: 0 };
     by[r.state].amount += (+r.award_amount || 0);
     by[r.state].count  += 1;
   }
   return by;
 }
-
-function topRecipientsForState(awards, stateCode, pscPrefix, naicsPrefix, limit = 100) {
+function topRecipientsForState(awards, stateCode, pscPrefix, naicsPrefix, limit=100) {
   const by = {};
   for (const r of awards) {
     if (r.state !== stateCode) continue;
@@ -237,129 +170,87 @@ function topRecipientsForState(awards, stateCode, pscPrefix, naicsPrefix, limit 
     by[name].count  += 1;
   }
   const rows = Object.entries(by).map(([name, v]) => ({ name, ...v }));
-  rows.sort((a, b) => b.amount - a.amount || b.count - a.count);
+  rows.sort((a,b) => b.amount - a.amount || b.count - a.count);
   return rows.slice(0, limit);
 }
 
 /* ================= topojson + drilldown ================= */
-
 const US_ATLAS_STATES   = "https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json";
 const US_ATLAS_COUNTIES = "https://cdn.jsdelivr.net/npm/us-atlas@3/counties-10m.json";
-
-let _statesTopo = null, _countiesTopo = null;
-let _statesGeo  = null, _countiesGeo  = null;
-
-const STATE_FIPS = {
-  AL:"01", AK:"02", AZ:"04", AR:"05", CA:"06", CO:"08", CT:"09", DE:"10", FL:"12",
-  GA:"13", HI:"15", ID:"16", IL:"17", IN:"18", IA:"19", KS:"20", KY:"21", LA:"22",
-  ME:"23", MD:"24", MA:"25", MI:"26", MN:"27", MS:"28", MO:"29", MT:"30", NE:"31",
-  NV:"32", NH:"33", NJ:"34", NM:"35", NY:"36", NC:"37", ND:"38", OH:"39", OK:"40",
-  OR:"41", PA:"42", RI:"44", SC:"45", SD:"46", TN:"47", TX:"48", UT:"49", VT:"50",
-  VA:"51", WA:"53", WV:"54", WI:"55", WY:"56", DC:"11"
-};
-
+let _statesTopo=null, _countiesTopo=null, _statesGeo=null, _countiesGeo=null;
+const STATE_FIPS = { AL:"01",AK:"02",AZ:"04",AR:"05",CA:"06",CO:"08",CT:"09",DE:"10",FL:"12",GA:"13",HI:"15",ID:"16",IL:"17",IN:"18",IA:"19",KS:"20",KY:"21",LA:"22",ME:"23",MD:"24",MA:"25",MI:"26",MN:"27",MS:"28",MO:"29",MT:"30",NE:"31",NV:"32",NH:"33",NJ:"34",NM:"35",NY:"36",NC:"37",ND:"38",OH:"39",OK:"40",OR:"41",PA:"42",RI:"44",SC:"45",SD:"46",TN:"47",TX:"48",UT:"49",VT:"50",VA:"51",WA:"53",WV:"54",WI:"55",WY:"56",DC:"11" };
 async function ensureTopo() {
   if (typeof topojson === "undefined") {
-    console.error("topojson-client not loaded. Include it before app.js.");
+    console.error("topojson-client not loaded.");
     return;
   }
   if (!_statesTopo)   _statesTopo   = await (await fetch(US_ATLAS_STATES)).json();
   if (!_countiesTopo) _countiesTopo = await (await fetch(US_ATLAS_COUNTIES)).json();
-  if (!_statesGeo)    _statesGeo    = topojson.feature(_statesTopo, _statesTopo.objects.states);
+  if (!_statesGeo)    _statesGeo    = topojson.feature(_statesTopo,   _statesTopo.objects.states);
   if (!_countiesGeo)  _countiesGeo  = topojson.feature(_countiesTopo, _countiesTopo.objects.counties);
 }
 
 /* ================= state drilldown & points ================= */
-
 function buildPointsForState(stateCode, awardsPos, pscPrefix, naicsPrefix) {
   if (!ZIPS) return null;
-
-  // Aggregate by recipient+ZIP so multiple awards at same ZIP aren’t all separate
   const by = {};
   for (const r of awardsPos) {
     if (r.state !== stateCode) continue;
     if (!passesCodeFilters(r, pscPrefix, naicsPrefix)) continue;
     const amt = +r.award_amount || 0;
     if (amt <= 0) continue;
-    const zip = String(r.pop_zip5 || "").slice(0, 5);
+    const zip = String(r.pop_zip5||"").slice(0,5);
     const z   = zip && ZIPS[zip] ? ZIPS[zip] : null;
-    if (!z || z.lat == null || z.lon == null) continue;
-
-    const key = `${zip}__${r.recipient_name || ""}`;
-    if (!by[key]) by[key] = { lat: z.lat, lon: z.lon, name: r.recipient_name || "", zip, amount: 0, count: 0 };
+    if (!z || z.lat==null || z.lon==null) continue;
+    const key = `${zip}__${r.recipient_name||""}`;
+    if (!by[key]) by[key] = { lat:z.lat, lon:z.lon, name:r.recipient_name||"", zip, amount:0, count:0 };
     by[key].amount += amt;
     by[key].count  += 1;
   }
-
   const pts = Object.values(by);
   if (!pts.length) return null;
-
-  // sqrt size scaling
-  const vmax = Math.max(...pts.map(p => p.amount), 1);
-  const min = 6, max = 28, k = (max - min) / Math.sqrt(vmax);
-
+  const vmax = Math.max(...pts.map(p=>p.amount), 1);
+  const min = 6, max = 28, k = (max-min)/Math.sqrt(vmax);
   return {
-    type: "scattergeo",
-    mode: "markers",
-    lat:  pts.map(p => p.lat),
-    lon:  pts.map(p => p.lon),
-    text: pts.map(p => `<b>${p.name}</b><br>${fmtUSD(p.amount)} · ${p.count} award(s)<br>${p.zip}`),
-    hovertemplate: "%{text}<extra></extra>",
-    marker: {
-      size: pts.map(p => min + k * Math.sqrt(p.amount || 0)),
-      line: { width: 0.5, color: "#333" },
-      opacity: 0.85
-    },
-    name: "Recipients",
-    showlegend: false
+    type:"scattergeo", mode:"markers",
+    lat: pts.map(p=>p.lat), lon: pts.map(p=>p.lon),
+    text: pts.map(p=>`<b>${p.name}</b><br>${fmtUSD(p.amount)} · ${p.count} award(s)<br>${p.zip}`),
+    hovertemplate:"%{text}<extra></extra>",
+    marker:{ size: pts.map(p=>min + k*Math.sqrt(p.amount||0)), line:{width:.5,color:"#333"}, opacity:.85 },
+    name:"Recipients", showlegend:false
   };
 }
-
 async function drawStateDrilldown(stateCode, pscPrefix, naicsPrefix) {
-  await ensureTopo();
-  await loadZipCentroids();
-
+  await ensureTopo(); await loadZipCentroids();
   const fips = STATE_FIPS[stateCode];
   if (!fips || !_statesGeo || !_countiesGeo) return;
 
-  const stateFeat = _statesGeo.features.find(f => String(f.id).padStart(2, "0") === fips);
-  const counties  = _countiesGeo.features.filter(f => String(f.id).padStart(5,"0").slice(0,2) === fips);
+  const stateFeat = _statesGeo.features.find(f => String(f.id).padStart(2,"0")===fips);
+  const counties  = _countiesGeo.features.filter(f => String(f.id).padStart(5,"0").slice(0,2)===fips);
 
   const stateFill = {
-    type: "choropleth",
-    geojson: { type:"FeatureCollection", features:[stateFeat] },
-    locations: [stateFeat.id],
-    featureidkey: "id",
-    z: [1],
-    showscale: false,
-    marker: { line: { width: 1, color: "#444" } },
-    hovertemplate: `${stateCode}<extra></extra>`,
-    name: "state",
-    showlegend: false
+    type:"choropleth",
+    geojson:{type:"FeatureCollection",features:[stateFeat]},
+    locations:[stateFeat.id], featureidkey:"id", z:[1],
+    showscale:false, marker:{line:{width:1,color:"#444"}}, hovertemplate:`${stateCode}<extra></extra>`,
+    name:"state", showlegend:false
   };
 
   const countyOutlines = [];
-  counties.forEach(c => {
-    const polys = c.geometry.type === "MultiPolygon" ? c.geometry.coordinates : [c.geometry.coordinates];
-    polys.forEach(poly => {
+  counties.forEach(c=>{
+    const polys = c.geometry.type==="MultiPolygon" ? c.geometry.coordinates : [c.geometry.coordinates];
+    polys.forEach(poly=>{
       const outer = poly[0];
       countyOutlines.push({
-        type: "scattergeo",
-        mode: "lines",
-        lat: outer.map(p => p[1]),
-        lon: outer.map(p => p[0]),
-        line: { width: 0.7, color: "#999" },
-        hoverinfo: "skip",
-        showlegend: false,
-        name: "county"
+        type:"scattergeo", mode:"lines",
+        lat: outer.map(p=>p[1]), lon: outer.map(p=>p[0]),
+        line:{width:.7,color:"#999"}, hoverinfo:"skip", showlegend:false, name:"county"
       });
     });
   });
 
   await Plotly.newPlot("map", [stateFill, ...countyOutlines], {
-    geo: { scope: "usa", fitbounds: "locations" },
-    margin: { l:10, r:10, t:10, b:10 },
-    showlegend: false
+    geo:{ scope:"usa", fitbounds:"locations" }, margin:{ l:10,r:10,t:10,b:10 }, showlegend:false
   }, { displayModeBar:false });
 
   const pts = buildPointsForState(stateCode, DATA.awardsPos, pscPrefix, naicsPrefix);
@@ -371,74 +262,53 @@ async function drawStateDrilldown(stateCode, pscPrefix, naicsPrefix) {
 
   window.MAP_MODE = "state";
   window.CURRENT_STATE = stateCode;
-  $("backToUS")?.style?.setProperty("display", "inline-block");
+  $("backToUS")?.style?.setProperty("display","inline-block");
 }
 
 /* ================= national map ================= */
-
 function drawRecipientsList(stateCode, pscPrefix, naicsPrefix) {
   const top = topRecipientsForState(DATA.awards, stateCode, pscPrefix, naicsPrefix, 200);
   $("stateTitle").textContent = `Recipients in ${stateCode}`;
-
   if (!top.length) {
     $("stateList").innerHTML = "<li class='muted'>No recipients for current filters.</li>";
     $("stateSummary").textContent = "";
     return;
   }
-
-  const totalAmt = top.reduce((s, r) => s + r.amount, 0);
-  const totalCnt = top.reduce((s, r) => s + r.count, 0);
+  const totalAmt = top.reduce((s,r)=>s+r.amount,0);
+  const totalCnt = top.reduce((s,r)=>s+r.count,0);
   $("stateSummary").textContent = `${top.length} recipients · ${totalCnt} awards · ${fmtUSD(totalAmt)} total`;
-  $("stateList").innerHTML = top.map((r) => `
-    <li>
-      <strong>${r.name}</strong>
-      — ${fmtUSD(r.amount)} (${r.count})
-      · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a>
-    </li>
+  $("stateList").innerHTML = top.map(r => `
+    <li><strong>${r.name}</strong> — ${fmtUSD(r.amount)} (${r.count})
+      · <a href="${careersUrl(r.name)}" target="_blank" rel="noopener">Search jobs</a></li>
   `).join("");
 }
-
 async function drawUSMap(pscPrefix, naicsPrefix, metric) {
   const by = aggregateByState(DATA.awardsPos, metric, pscPrefix, naicsPrefix);
   const states = Object.keys(by);
-  const z = states.map((s) => (metric === "amount" ? by[s].amount : by[s].count));
-
+  const z = states.map(s => (metric==="amount" ? by[s].amount : by[s].count));
   if (!states.length) {
     const map = $("map");
     if (map) map.innerHTML = "<p><em>No data for current filters.</em></p>";
     const note = $("mapNote");
-    if (note) note.textContent = (pscPrefix || naicsPrefix)
-      ? "Try clearing or changing PSC/NAICS filters."
-      : "";
+    if (note) note.textContent = (pscPrefix||naicsPrefix) ? "Try clearing or changing PSC/NAICS filters." : "";
     return;
   }
-
-  const text = states.map((s) => {
+  const text = states.map(s => {
     const a = by[s];
-    return `${s}: ${metric === "amount" ? fmtUSD(a.amount) : `${a.count} awards`}`;
+    return `${s}: ${metric==="amount" ? fmtUSD(a.amount) : `${a.count} awards`}`;
   });
 
-  await Plotly.newPlot(
-    "map",
-    [{
-      type: "choropleth",
-      locationmode: "USA-states",
-      locations: states,
-      z: z,
-      text: text,
-      colorbar: { title: metric === "amount" ? "USD" : "Count" },
-      name: "usa",
-      showscale: true,
-      showlegend: false
-    }],
-    { geo: { scope: "usa", projection: { type: "albers usa" } }, margin: { l: 10, r: 10, t: 10, b: 10 }, showlegend:false },
-    { displayModeBar: false }
-  );
+  await Plotly.newPlot("map", [{
+    type:"choropleth", locationmode:"USA-states", locations:states, z, text,
+    colorbar:{ title: metric==="amount" ? "USD" : "Count" },
+    name:"usa", showscale:true, showlegend:false
+  }], { geo:{ scope:"usa", projection:{type:"albers usa"}}, margin:{l:10,r:10,t:10,b:10}, showlegend:false },
+  { displayModeBar:false });
 
   const mapEl = $("map");
   if (mapEl) {
-    mapEl.on("plotly_click", async (ev) => {
-      const loc = ev.points?.[0]?.location; // e.g., "MD"
+    mapEl.on("plotly_click", async (ev)=>{
+      const loc = ev.points?.[0]?.location;
       if (!loc) return;
       drawRecipientsList(loc, pscPrefix, naicsPrefix);
       await drawStateDrilldown(loc, pscPrefix, naicsPrefix);
@@ -447,53 +317,48 @@ async function drawUSMap(pscPrefix, naicsPrefix, metric) {
 
   window.MAP_MODE = "us";
   window.CURRENT_STATE = null;
-  $("backToUS")?.style?.setProperty("display", "none");
+  $("backToUS")?.style?.setProperty("display","none");
   window.POINT_TRACE_ID = null;
 }
 
-/* ================= main ================= */
-
+/* ================= main render ================= */
 async function render() {
   const [recipsMaybe, awardsRaw] = await Promise.all([
     loadRecipientsOrFallback(),
-    loadCSV(AWARDS_URL).catch((e) => { debug(e.message); return []; }),
+    loadCSV(AWARDS_URL).catch((e)=>{ debug(e.message); return []; }),
   ]);
-
-  debug("awardsRaw length:", awardsRaw.length, "recipsMaybe length:", recipsMaybe ? recipsMaybe.length : null);
 
   const awardsAllRows = awardsRaw.map(normalizeAwardRow);
   DATA.awards    = awardsAllRows;
-  DATA.awardsPos = awardsAllRows.filter(r => (+r.award_amount || 0) > 0);
+  DATA.awardsPos = awardsAllRows.filter(r => (+r.award_amount||0) > 0);
 
-  // --- Top recipients (All vs SB/8a) ---
   const recipsAll = (
     recipsMaybe ??
     (() => {
       const by = {};
       for (const r of DATA.awardsPos) if (r.recipient_name)
-        by[r.recipient_name] = (by[r.recipient_name] || 0) + r.award_amount;
-      return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside: null }));
+        by[r.recipient_name] = (by[r.recipient_name]||0) + r.award_amount;
+      return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside:null }));
     })()
-  ).map((r) => ({
+  ).map(r => ({
     name: r["Recipient Name"] ?? r["recipient_name"] ?? r.name ?? "",
     amount: toNum(r["Award Amount"] ?? r["award_amount"] ?? r.amount),
     set_aside: r["Type of Set Aside"] ?? r["Type Of Set Aside"] ?? r["type_of_set_aside"] ?? r.set_aside ?? null,
-  })).filter((r) => r.name);
+  })).filter(r => r.name);
 
   DATA.recipsAll = recipsAll;
 
-  // Sync Download buttons (if present)
+  // Download buttons
   const dlCsv  = $("dlCsv");
   const dlJson = $("dlJson");
   if (dlCsv)  dlCsv.href  = AWARDS_URL;
   if (dlJson) dlJson.href = AWARDS_URL.replace(/\.csv(\?.*)?$/, ".json$1");
 
-  // UI refs
+  // Top recipients chart
   const topNInput  = $("topN");
   const tabAllBtn  = $("tab-all") || $("tabAll");
   const tabSBBtn   = $("tab-sb")  || $("tabSB");
   const chartTitle = $("chartTitle");
-
   let currentTab = "all";
 
   function dataForTab() {
@@ -503,14 +368,14 @@ async function render() {
           for (const r of DATA.awardsPos) {
             if (!r.recipient_name) continue;
             if (!isSmallBusinessSetAside(r.set_aside)) continue;
-            by[r.recipient_name] = (by[r.recipient_name] || 0) + r.award_amount;
+            by[r.recipient_name] = (by[r.recipient_name]||0) + r.award_amount;
           }
           return Object.entries(by).map(([name, amount]) => ({ name, amount, set_aside: "SB/8(a)" }));
         })()
       : DATA.recipsAll
-    ).slice().sort((a, b) => b.amount - a.amount);
+    ).slice().sort((a,b)=>b.amount-a.amount);
 
-    const N = Math.min(Math.max(+topNInput?.value || 25, 1), 200);
+    const N = Math.min(Math.max(+topNInput?.value||25,1),200);
     return base.slice(0, N);
   }
 
@@ -521,50 +386,39 @@ async function render() {
       if (chartEl) chartEl.innerHTML = "<p><em>No recipient data available for this tab.</em></p>";
       return;
     }
-    const hover = top.map(
-      (d) => `<b>${d.name}</b><br>${fmtUSD(d.amount)}${d.set_aside ? `<br>${d.set_aside}` : ""}<br><i>Click to open careers</i>`
+    const hover = top.map(d =>
+      `<b>${d.name}</b><br>${fmtUSD(d.amount)}${d.set_aside?`<br>${d.set_aside}`:""}<br><i>Click to open careers</i>`
     );
-    Plotly.newPlot(
-      "chart",
-      [{
-        type: "bar",
-        x: top.map((d) => d.amount),
-        y: top.map((d) => d.name),
-        orientation: "h",
-        hovertemplate: hover.map((h) => h + "<extra></extra>"),
-      }],
-      { margin: { l: 260, r: 20, t: 10, b: 40 }, xaxis: { title: "Total (USD)" } },
-      { displayModeBar: false }
-    );
-    if (chartEl) {
-      chartEl.on("plotly_click", (ev) => {
-        const name = ev.points?.[0]?.y;
-        if (name) window.open(careersUrl(name), "_blank");
-      });
-    }
+    Plotly.newPlot("chart", [{
+      type:"bar",
+      x: top.map(d=>d.amount),
+      y: top.map(d=>d.name),
+      orientation:"h",
+      hovertemplate: hover.map(h=>h+"<extra></extra>")
+    }], { margin:{l:260,r:20,t:10,b:40}, xaxis:{ title:"Total (USD)" } }, { displayModeBar:false });
+
+    chartEl?.on?.("plotly_click", ev => {
+      const name = ev.points?.[0]?.y;
+      if (name) window.open(careersUrl(name), "_blank");
+    });
   }
 
   function setTab(tab) {
     currentTab = tab;
-    if (tabAllBtn && tabSBBtn) {
-      tabAllBtn.classList.toggle("active", tab === "all");
-      tabSBBtn.classList.toggle("active",  tab === "sb");
-    }
-    if (chartTitle) {
-      chartTitle.textContent = tab === "sb"
-        ? "Top recipients — Small business / 8(a) only"
-        : "Top recipients (by obligated amount)";
-    }
+    tabAllBtn?.classList?.toggle("active", tab==="all");
+    tabSBBtn?.classList?.toggle("active",  tab==="sb");
+    if (chartTitle) chartTitle.textContent = tab==="sb"
+      ? "Top recipients — Small business / 8(a) only"
+      : "Top recipients (by obligated amount)";
     drawChart();
   }
 
-  if (topNInput) topNInput.addEventListener("input", drawChart);
-  if (tabAllBtn) tabAllBtn.addEventListener("click", () => setTab("all"));
-  if (tabSBBtn)  tabSBBtn.addEventListener("click", () => setTab("sb"));
+  topNInput?.addEventListener("input", drawChart);
+  tabAllBtn?.addEventListener("click", () => setTab("all"));
+  tabSBBtn?.addEventListener("click",  () => setTab("sb"));
   setTab("all");
 
-  /* ----- Maps & filters ----- */
-
+  // Map & filters
   const pscInput    = $("pscFilter");
   const naicsInput  = $("naicsFilter");
   const metricSel   = $("aggMetric");
@@ -574,11 +428,10 @@ async function render() {
   const toggleBtn   = $("togglePoints");
 
   async function redraw() {
-    const psc   = (pscInput?.value   || "").trim();
-    const naics = (naicsInput?.value || "").trim();
-    const metric = metricSel?.value || "amount";
-
-    if (window.MAP_MODE === "state" && window.CURRENT_STATE) {
+    const psc   = (pscInput?.value||"").trim();
+    const naics = (naicsInput?.value||"").trim();
+    const metric=  metricSel?.value||"amount";
+    if (window.MAP_MODE==="state" && window.CURRENT_STATE) {
       drawRecipientsList(window.CURRENT_STATE, psc, naics);
       await drawStateDrilldown(window.CURRENT_STATE, psc, naics);
     } else {
@@ -587,7 +440,6 @@ async function render() {
   }
 
   await drawUSMap((pscInput?.value||""), (naicsInput?.value||""), (metricSel?.value||"amount"));
-
   applyBtn?.addEventListener("click", () => { redraw(); });
   metricSel?.addEventListener("change", () => { redraw(); });
 
@@ -599,62 +451,53 @@ async function render() {
     $("stateList").innerHTML      = "";
     window.MAP_MODE = "us";
     window.CURRENT_STATE = null;
-    $("backToUS")?.style?.setProperty("display", "none");
-    await drawUSMap("", "", metricSel?.value || "amount");
+    $("backToUS")?.style?.setProperty("display","none");
+    await drawUSMap("", "", metricSel?.value||"amount");
   });
 
   backBtn?.addEventListener("click", async () => {
     window.MAP_MODE = "us";
     window.CURRENT_STATE = null;
-    $("backToUS")?.style?.setProperty("display", "none");
+    $("backToUS")?.style?.setProperty("display","none");
     $("stateTitle").textContent   = "Click a state";
     $("stateSummary").textContent = "";
     $("stateList").innerHTML      = "";
-    await drawUSMap(pscInput?.value || "", naicsInput?.value || "", metricSel?.value || "amount");
+    await drawUSMap(pscInput?.value||"", naicsInput?.value||"", metricSel?.value||"amount");
   });
 
   toggleBtn?.addEventListener("click", async (ev) => {
     const gd = $("map");
-    if (!gd || window.MAP_MODE !== "state" || window.POINT_TRACE_ID == null) return;
+    if (!gd || window.MAP_MODE!=="state" || window.POINT_TRACE_ID==null) return;
     const current = gd.data[window.POINT_TRACE_ID];
     const isHidden = current.visible === "legendonly" || current.visible === false;
     await Plotly.restyle(gd, { visible: isHidden ? true : "legendonly" }, window.POINT_TRACE_ID);
     ev.currentTarget.textContent = isHidden ? "Hide recipient points" : "Show recipient points";
   });
 
-  /* ----- Recent awards table (raw) ----- */
-
+  // Recent awards table (raw)
   const thead = document.querySelector("#awardsTable thead");
   const tbody = document.querySelector("#awardsTable tbody");
   let awardsSlice = 500;
 
-  // optional: NAICS filter for the raw table
   const awardsNaicsInput = $("awardsNaics");
   const awardsNaicsClear = $("awardsNaicsClear");
 
-  function rowPassesAwardsNaics(r) {
-    const q = (awardsNaicsInput?.value || "").trim();
+  const rowPassesAwardsNaics = (r) => {
+    const q = (awardsNaicsInput?.value||"").trim();
     if (!q) return true;
     return String(r.naics || "").startsWith(q);
-  }
+  };
 
   function renderAwardsTable() {
     if (!thead || !tbody) return;
-
     thead.innerHTML = `<tr>
-      <th>Action Date</th>
-      <th>Recipient Name</th>
-      <th>Award Amount</th>
-      <th>PIID</th>
-      <th>Type of Set Aside / Size</th>
-      <th>PSC</th>
-      <th>NAICS</th>
-      <th>Careers</th>
+      <th>Action Date</th><th>Recipient Name</th><th>Award Amount</th><th>PIID</th>
+      <th>Type of Set Aside / Size</th><th>PSC</th><th>NAICS</th><th>Careers</th>
     </tr>`;
 
-    const rows = DATA.awards.filter(rowPassesAwardsNaics).slice(0, awardsSlice);
-
-    tbody.innerHTML = rows.map((r) => `
+    const filtered = DATA.awards.filter(rowPassesAwardsNaics);
+    const rows = filtered.slice(0, awardsSlice);
+    tbody.innerHTML = rows.map(r => `
       <tr>
         <td>${r.action_date ?? ""}</td>
         <td>${r.recipient_name ?? ""}</td>
@@ -663,88 +506,75 @@ async function render() {
         <td>${r.set_aside ?? ""}</td>
         <td>${r.psc ?? ""}</td>
         <td>${r.naics ?? ""}</td>
-        <td><a href="${careersUrl(r.recipient_name || "")}" target="_blank" rel="noopener">Search jobs</a></td>
-      </tr>
-    `).join("");
+        <td><a href="${careersUrl(r.recipient_name||"")}" target="_blank" rel="noopener">Search jobs</a></td>
+      </tr>`).join("");
 
     const summary = $("summary");
-    if (summary) summary.textContent =
-      `Rows shown: ${Math.min(awardsSlice, rows.length)} of ${DATA.awards.filter(rowPassesAwardsNaics).length}`;
+    if (summary) summary.textContent = `Rows shown: ${Math.min(awardsSlice, rows.length)} of ${filtered.length}`;
   }
 
-  if (awardsNaicsInput) {
-    awardsNaicsInput.addEventListener("input", () => {
-      awardsSlice = 500;
-      renderAwardsTable();
-    });
-  }
-  if (awardsNaicsClear) {
-    awardsNaicsClear.addEventListener("click", () => {
-      if (awardsNaicsInput) awardsNaicsInput.value = "";
-      awardsSlice = 500;
-      renderAwardsTable();
-    });
-  }
+  awardsNaicsInput?.addEventListener("input", () => { awardsSlice = 500; renderAwardsTable(); });
+  awardsNaicsClear?.addEventListener("click", () => {
+    if (awardsNaicsInput) awardsNaicsInput.value = "";
+    awardsSlice = 500; renderAwardsTable();
+  });
 
   renderAwardsTable();
 
   const showMoreBtn = $("showMore");
-  if (showMoreBtn) {
-    showMoreBtn.addEventListener("click", () => {
-      awardsSlice = Math.min(awardsSlice + 1000, DATA.awards.filter(rowPassesAwardsNaics).length);
-      renderAwardsTable();
-      if (awardsSlice >= DATA.awards.filter(rowPassesAwardsNaics).length) showMoreBtn.disabled = true;
-    });
-  }
+  showMoreBtn?.addEventListener("click", () => {
+    const filteredLen = DATA.awards.filter(rowPassesAwardsNaics).length;
+    awardsSlice = Math.min(awardsSlice + 1000, filteredLen);
+    renderAwardsTable();
+    if (awardsSlice >= filteredLen) showMoreBtn.disabled = true;
+  });
 
-  /* ----- Recent awardees (aggregated recipients) ----- */
-
+  // Recent awardees table
   const awHead = document.querySelector('#awardeesTable thead');
   const awBody = document.querySelector('#awardeesTable tbody');
-
   if (awHead && awBody) {
     awHead.innerHTML = `<tr><th>Recipient</th><th>Total Obligated</th></tr>`;
-
-    function renderAwardeesTable(N = 200) {
-      const rows = DATA.recipsAll.slice().sort((a,b) => b.amount - a.amount).slice(0, N);
-      awBody.innerHTML = rows.map(r =>
-        `<tr><td>${r.name}</td><td>${fmtUSD(r.amount)}</td></tr>`
-      ).join('');
-
-      const sum = rows.reduce((s,r) => s + (r.amount || 0), 0);
+    function renderAwardeesTable(N=200) {
+      const rows = DATA.recipsAll.slice().sort((a,b)=>b.amount-a.amount).slice(0,N);
+      awBody.innerHTML = rows.map(r => `<tr><td>${r.name}</td><td>${fmtUSD(r.amount)}</td></tr>`).join("");
+      const sum = rows.reduce((s,r)=>s+(r.amount||0),0);
       const info = $("awardeesSummary");
       if (info) info.textContent = `Top ${rows.length} recipients · ${fmtUSD(sum)} total`;
     }
-
     renderAwardeesTable();
   }
 
-  // Expose for quick console checks
+  // Expose for console checks
   window._awards    = DATA.awards;
   window._awardsPos = DATA.awardsPos;
 }
-// Allow page includes to switch agency and force a re-render without reloading the whole site
+
+/* ================= rerender hook for PJAX nav ================= */
 window.__AWARDS_RERENDER__ = async function () {
   try {
-    setUrlsFromAPP();                        // pick up the new /data/<agency>_*.csv
-    // wipe containers so we don't double-render
+    setUrlsFromAPP();
+
+    // Clear old UI to avoid duplicates when navigating between agency pages
     document.getElementById('chart')?.replaceChildren();
     document.getElementById('map')?.replaceChildren();
     document.querySelector('#awardsTable thead')?.replaceChildren();
     document.querySelector('#awardsTable tbody')?.replaceChildren();
     document.querySelector('#awardeesTable thead')?.replaceChildren();
     document.querySelector('#awardeesTable tbody')?.replaceChildren();
-    // reset in-memory data
+
+    // Reset in-memory data and map state
     window.__DATA__ = { awards: [], awardsPos: [], recipsAll: [] };
-    // run render again to fetch EPA (or whichever) files
+    window.MAP_MODE = "us";
+    window.CURRENT_STATE = null;
+    window.POINT_TRACE_ID = null;
+
     await render();
   } catch (e) {
     console.error(e);
   }
 };
 
-/* ================= run ================= */
-
+/* ================= initial run ================= */
 render().catch((err) => {
   console.error(err);
   const el = $("debug");
