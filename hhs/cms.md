@@ -10,16 +10,19 @@ no_push_state: true
 
 <script data-no-instant>
   (function () {
-    // If the app is already on the page (Hydejack PJAX navigation), just rerender.
     function boot() {
+      // If app.js already attached a rerender hook, call it
       if (window.__AWARDS_RERENDER__) window.__AWARDS_RERENDER__();
     }
 
+    // If app.js is already present (PJAX navigation), just rerender.
     if (window.__AWARDS_RERENDER__) {
-      // app.js already loaded globally
       boot();
-    } else if (!window.__AWARDS_APP_ATTACHED__) {
-      // load app.js exactly once
+      return;
+    }
+
+    // Load app.js exactly once per site session.
+    if (!window.__AWARDS_APP_ATTACHED__) {
       window.__AWARDS_APP_ATTACHED__ = true;
       var s = document.createElement('script');
       s.src = '{{ "/assets/js/app.js" | relative_url }}';
@@ -27,6 +30,10 @@ no_push_state: true
       s.setAttribute('data-no-instant', '');
       s.onload = boot;
       document.head.appendChild(s);
+    } else {
+      // app.js is being attached elsewhere; try to rerender after a tick
+      setTimeout(boot, 0);
     }
   })();
 </script>
+

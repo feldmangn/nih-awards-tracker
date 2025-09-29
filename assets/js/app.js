@@ -9,6 +9,27 @@ const DEBUG = false;
 const debug = (m, ...rest) => { if (DEBUG) console.log(m, ...rest); };
 const bust = () => `?t=${Date.now()}`;
 
+// Reuse a single render; allow PJAX pages to call it
+if (window.__AWARDS_BOOTED__) {
+  // If somehow loaded twice, bail early
+  console.warn("app.js already booted");
+} else {
+  window.__AWARDS_BOOTED__ = true;
+}
+
+// expose a rerender hook
+window.__AWARDS_RERENDER__ = function () {
+  try {
+    // You can re-run the main 'render' or a smaller refresh here.
+    // Easiest: call render() again; it will rebuild using the new APP_DATA_URLS.
+    render();
+  } catch (e) {
+    console.error("Rerender failed:", e);
+  }
+};
+
+
+
 let BASE = window.__NIH_BASEURL__ || "";
 const H = location.hostname;
 if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";

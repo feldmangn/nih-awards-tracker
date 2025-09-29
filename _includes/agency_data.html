@@ -96,33 +96,33 @@ agency_prefix: epa
   <div id="debug"></div>
 </div>
 
-<!-- ========= Libraries (must be before app.js) ========= -->
-<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+<!-- ===== Libraries (must be before app.js) ===== -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" data-no-instant></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" data-no-instant></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3" data-no-instant></script>
 
-<!-- ========= Jekyll baseurl -> JS ========= -->
-<script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
+<!-- Jekyll baseurl -> JS -->
+<script data-no-instant>
+  window.__NIH_BASEURL__ = "{{ site.baseurl }}";
+</script>
 
-<!-- ========= Build data URLs for THIS agency (before app.js runs) ========= -->
-<script>
+<!-- Build data URLs for THIS agency (runs before app.js) -->
+<script data-no-instant>
   (function () {
-    var prefix = "{{ include.prefix | strip | downcase | default: 'nih' }}";
+    var prefix = "{{ include.prefix | strip | default: 'nih' }}";
     var base   = "{{ '/data/' | relative_url }}";
 
+    // Overwrite APP_DATA_URLS every time this include runs (important for PJAX)
     window.APP_DATA_URLS = {
       AWARDS:           base + prefix + "_awards_last_90d.csv",
       TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
       TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
     };
 
-    // Point the download links at this agency’s files
+    // Point download buttons to this agency’s files
     var csvA  = document.getElementById('dlCsv');
     var jsonA = document.getElementById('dlJson');
     if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
     if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
-
-    // Tell the app to (re)render with these URLs (works after PJAX nav)
-    if (window.__AWARDS_RERENDER__) window.__AWARDS_RERENDER__();
   })();
 </script>
