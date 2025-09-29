@@ -17,39 +17,18 @@ const bust = () => `?t=${Date.now()}`;
 let BASE = window.__NIH_BASEURL__ || "";
 const H = location.hostname;
 if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";
-
-/** Build URLs if the page didn't set APP_DATA_URLS **/
-(function ensureDataUrls() {
-  const qs = new URLSearchParams(location.search);
-  const qsPrefix = (qs.get("agency") || "").trim();
-  const fmPrefix = (window.__AGENCY_PREFIX__ || "").trim();
-  const prefix = (fmPrefix || qsPrefix || "nih").toLowerCase();
-
-  if (!window.APP_DATA_URLS) window.APP_DATA_URLS = {};
-  const U = window.APP_DATA_URLS;
-  const DATA_DIR = `${BASE}/data`;
-
-  U.AWARDS           = U.AWARDS           || `${DATA_DIR}/${prefix}_awards_last_90d.csv`;
-  U.TOP_RECIP        = U.TOP_RECIP        || `${DATA_DIR}/${prefix}_top_recipients_last_90d.csv`;
-  U.TOP_RECIP_ENRICH = U.TOP_RECIP_ENRICH || `${DATA_DIR}/${prefix}_top_recipients_last_90d_enriched.csv`;
-
-  window.__AGENCY_PREFIX__ = prefix; // expose for other inline scripts if needed
-})();
-
-const U = window.APP_DATA_URLS;
 const DATA_DIR = `${BASE}/data`;
 
-// window.APP_DATA_URLS must be set by agency_data.html BEFORE app.js loads
+// ---- REQUIRED: agency_data.html must set window.APP_DATA_URLS ----
 const U = window.APP_DATA_URLS || {};
 if (!U.AWARDS || !U.TOP_RECIP) {
   throw new Error(
-    "APP_DATA_URLS missing. Ensure {% include agency_data.html prefix=... %} runs before app.js"
+    "APP_DATA_URLS missing. Ensure `{% include agency_data.html prefix=... %}` runs before app.js on this page."
   );
 }
 
 const AWARDS_URL           = `${U.AWARDS}${bust()}`;
 const TOP_RECIP_URL        = `${U.TOP_RECIP}${bust()}`;
-// Enriched is optional; fall back to the basic top recipients for THIS agency
 const TOP_RECIP_ENRICH_URL = `${(U.TOP_RECIP_ENRICH || U.TOP_RECIP)}${bust()}`;
 const ZIP_CENTROIDS_URL    = `${DATA_DIR}/zip_centroids.json${bust()}`;
 
@@ -71,10 +50,10 @@ const careersUrl = (name) =>
 
 const $ = (id) => document.getElementById(id);
 
-// Global UI state (guarded so re-loading the file doesn’t redeclare)
+// Global UI state
 window.MAP_MODE       = window.MAP_MODE       ?? "us";   // "us" | "state"
-window.CURRENT_STATE  = window.CURRENT_STATE  ?? null;    // 2-letter postal
-window.POINT_TRACE_ID = window.POINT_TRACE_ID ?? null;    // Plotly trace index
+window.CURRENT_STATE  = window.CURRENT_STATE  ?? null;   // 2-letter postal
+window.POINT_TRACE_ID = window.POINT_TRACE_ID ?? null;   // Plotly trace index
 
 // Data bucket so helpers can access after render initializes it
 window.__DATA__ = window.__DATA__ || { awards: [], awardsPos: [], recipsAll: [] };
@@ -107,6 +86,7 @@ async function loadCSV(url) {
   );
 }
 
+// Prefer enriched; fall back to basic top-recipients for THIS agency
 async function loadRecipientsOrFallback() {
   try { return await loadCSV(TOP_RECIP_ENRICH_URL); } catch (e) { debug(e.message); }
   try { return await loadCSV(TOP_RECIP_URL);        } catch (e) { debug(e.message); }
@@ -151,7 +131,7 @@ function normalizeAwardRow(row) {
   const action_date = lower["action date"] ?? lower["action_date"] ?? lower["actiondate"] ?? null;
   const recipient   = (lower["recipient name"] ?? lower["recipient_name"] ?? "").trim();
   const amount      = toNum(lower["award amount"] ?? lower["transaction amount"] ?? lower["award_amount"]);
-  const piid        = lower["piid"] ?? lower["piid "] ?? null; // tolerate odd spaces
+  const piid        = lower["piid"] ?? lower["piid "] ?? null;
 
   const stateCode   = (lower["place of performance state code"] ??
                        lower["primary place of performance state code"] ?? "")
@@ -159,7 +139,6 @@ function normalizeAwardRow(row) {
   const stateName   = lower["place of performance state name"] ??
                       lower["primary place of performance"] ?? "";
 
-  // city + zip from CSV
   const city   = lower["place of performance city name"] ??
                  lower["primary place of performance city name"] ?? "";
   const zipRaw = lower["place of performance zip code"] ??
@@ -167,7 +146,6 @@ function normalizeAwardRow(row) {
                  lower["place of performance zip code (+4)"] ?? "";
   const zip5   = String(zipRaw).slice(0, 5);
 
-  // coords: use CSV values if present; otherwise null (we fill from ZIPS later)
   const lat = lower["latitude"]  != null ? +lower["latitude"]  : null;
   const lon = lower["longitude"] != null ? +lower["longitude"] : null;
 
@@ -316,7 +294,6 @@ async function drawStateDrilldown(stateCode, pscPrefix, naicsPrefix) {
   const fips = STATE_FIPS[stateCode];
   if (!fips || !_statesGeo || !_countiesGeo) return;
 
-  // --- outline layers ---
   const stateFeat = _statesGeo.features.find(f => String(f.id).padStart(2, "0") === fips);
   const counties  = _countiesGeo.features.filter(f => String(f.id).padStart(5,"0").slice(0,2) === fips);
 
@@ -357,7 +334,6 @@ async function drawStateDrilldown(stateCode, pscPrefix, naicsPrefix) {
     showlegend: false
   }, { displayModeBar:false });
 
-  // Recipient points by ZIP (filtered)
   const pts = buildPointsForState(stateCode, DATA.awardsPos, pscPrefix, naicsPrefix);
   window.POINT_TRACE_ID = null;
   if (pts) {
@@ -365,7 +341,6 @@ async function drawStateDrilldown(stateCode, pscPrefix, naicsPrefix) {
     window.POINT_TRACE_ID = Array.isArray(inds) ? inds[0] : inds;
   }
 
-  // UI state
   window.MAP_MODE = "state";
   window.CURRENT_STATE = stateCode;
   $("backToUS")?.style?.setProperty("display", "inline-block");
@@ -442,7 +417,6 @@ async function drawUSMap(pscPrefix, naicsPrefix, metric) {
     });
   }
 
-  // Reset national view state
   window.MAP_MODE = "us";
   window.CURRENT_STATE = null;
   $("backToUS")?.style?.setProperty("display", "none");
@@ -452,7 +426,6 @@ async function drawUSMap(pscPrefix, naicsPrefix, metric) {
 /* ================= main ================= */
 
 async function render() {
-  // Load data
   const [recipsMaybe, awardsRaw] = await Promise.all([
     loadRecipientsOrFallback(),
     loadCSV(AWARDS_URL).catch((e) => { debug(e.message); return []; }),
@@ -460,7 +433,6 @@ async function render() {
 
   debug("awardsRaw length:", awardsRaw.length, "recipsMaybe length:", recipsMaybe ? recipsMaybe.length : null);
 
-  // Normalize and store
   const awardsAllRows = awardsRaw.map(normalizeAwardRow);
   DATA.awards    = awardsAllRows;
   DATA.awardsPos = awardsAllRows.filter(r => (+r.award_amount || 0) > 0);
