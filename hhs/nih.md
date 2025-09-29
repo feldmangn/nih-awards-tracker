@@ -8,31 +8,24 @@ no_push_state: true
 
 {% include agency_data.html prefix=page.agency_prefix %}
 
+<!-- Build data URLs for THIS agency (before app.js) -->
 <script data-no-instant>
   (function () {
-    function boot() {
-      // If app.js already attached a rerender hook, call it
-      if (window.__AWARDS_RERENDER__) window.__AWARDS_RERENDER__();
-    }
-
-    // If app.js is already present (PJAX navigation), just rerender.
-    if (window.__AWARDS_RERENDER__) {
-      boot();
-      return;
-    }
-
-    // Load app.js exactly once per site session.
-    if (!window.__AWARDS_APP_ATTACHED__) {
-      window.__AWARDS_APP_ATTACHED__ = true;
-      var s = document.createElement('script');
-      s.src = '{{ "/assets/js/app.js" | relative_url }}';
-      s.defer = true;
-      s.setAttribute('data-no-instant', '');
-      s.onload = boot;
-      document.head.appendChild(s);
-    } else {
-      // app.js is being attached elsewhere; try to rerender after a tick
-      setTimeout(boot, 0);
-    }
+    var prefix = "{{ include.prefix | strip | default: 'nih' }}";
+    var base   = "{{ '/data/' | relative_url }}";
+    window.APP_DATA_URLS = {
+      AWARDS:           base + prefix + "_awards_last_90d.csv",
+      TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
+      TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
+    };
+    // Update download links (optional)
+    var csvA  = document.getElementById('dlCsv');
+    var jsonA = document.getElementById('dlJson');
+    if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
+    if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
   })();
 </script>
+
+<!-- App code (reads window.APP_DATA_URLS) -->
+<script src="{{ '/assets/js/app.js' | relative_url }}" data-no-instant defer></script>
+

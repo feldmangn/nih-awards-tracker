@@ -4,6 +4,19 @@
  * - Recent awards table + recent awardees table
  */
 
+
+// Prevent double-initialization when PJAX/InstantClick is around
+if (window.__AWARDS_APP_LOADED__) {
+  // Already initialized — bail out
+  // (Hydejack sometimes reinserts scripts on navigation)
+  // This avoids "Identifier 'DEBUG' has already been declared"
+} else {
+  window.__AWARDS_APP_LOADED__ = true;
+  (function () {
+    // ... put ALL existing app.js code inside this IIFE ...
+  })();
+}
+
 /* ================= config & helpers ================= */
 const DEBUG = false;
 const debug = (m, ...rest) => { if (DEBUG) console.log(m, ...rest); };
