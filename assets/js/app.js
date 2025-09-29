@@ -7,6 +7,10 @@
  */
 
 /* ================= config & helpers ================= */
+// Prevent double-init when Hydejack swaps pages
+if (window.__AWARDS_APP_INIT__) { console.debug('awards app already initialized; skip'); /* bail out */ throw new Error('SKIP_INIT'); }
+window.__AWARDS_APP_INIT__ = true;
+
 
 const DEBUG = false;
 const debug = (m, ...rest) => { if (DEBUG) console.log(m, ...rest); };
