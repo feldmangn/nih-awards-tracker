@@ -10,7 +10,6 @@
 
 const DEBUG = false;
 const debug = (m, ...rest) => { if (DEBUG) console.log(m, ...rest); };
-
 const bust = () => `?t=${Date.now()}`;
 
 // Base URL from Jekyll; ignore it in Codespaces/local dev
@@ -18,6 +17,28 @@ let BASE = window.__NIH_BASEURL__ || "";
 const H = location.hostname;
 if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";
 const DATA_DIR = `${BASE}/data`;
+
+// ---- Bootstrap APP_DATA_URLS if the page didn't set them ----
+(function ensureDataUrls() {
+  let BASE = window.__NIH_BASEURL__ || "";
+  const H = location.hostname;
+  if (H === "localhost" || H.endsWith(".app.github.dev")) BASE = "";
+  const DATA_DIR = `${BASE}/data`;
+
+  // Read <div id="agency-root" data-prefix="..."> set in agency_data.html
+  const domPrefix = document.getElementById('agency-root')?.dataset.prefix?.trim().toLowerCase();
+  const qsPrefix  = new URLSearchParams(location.search).get('agency')?.trim().toLowerCase();
+  const prefix    = domPrefix || qsPrefix || 'nih';  // fallback if missing
+
+  if (!window.APP_DATA_URLS) window.APP_DATA_URLS = {
+    AWARDS:           `${DATA_DIR}/${prefix}_awards_last_90d.csv`,
+    TOP_RECIP:        `${DATA_DIR}/${prefix}_top_recipients_last_90d.csv`,
+    TOP_RECIP_ENRICH: `${DATA_DIR}/${prefix}_top_recipients_last_90d_enriched.csv`,
+  };
+
+  window.__AGENCY_PREFIX__ = prefix;
+})();
+
 
 // ---- REQUIRED: agency_data.html must set window.APP_DATA_URLS ----
 const U = window.APP_DATA_URLS || {};
