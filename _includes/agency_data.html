@@ -92,35 +92,35 @@
   <div id="debug"></div>
 </div>
 
-<!-- ========= Libraries (must be before app.js) ========= -->
+<!-- Libraries (must be before app.js) -->
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
 
-<!-- ========= Jekyll baseurl -> JS ========= -->
+<!-- Jekyll baseurl -> JS -->
 <script>window.__NIH_BASEURL__ = "{{ site.baseurl }}";</script>
 
-<!-- ========= Build data URLs for THIS agency (before app.js) ========= -->
+<!-- Build data URLs for THIS agency (before app.js) -->
 <script>
-  (function () {
-    // prefix comes from the include call; default to 'nih' if omitted
-    var prefix = "{{ include.prefix | strip | default: 'nih' }}";
-    var base   = "{{ '/data/' | relative_url }}";
+(function () {
+  var prefix = "{{ include.prefix | default: 'nih' | strip | downcase }}";
+  var base   = "{{ '/data/' | relative_url }}";
 
-    // Expose exact file paths for app.js
-    window.APP_DATA_URLS = {
-      AWARDS:            base + prefix + "_awards_last_90d.csv",
-      TOP_RECIP:         base + prefix + "_top_recipients_last_90d.csv",
-      TOP_RECIP_ENRICH:  base + prefix + "_top_recipients_last_90d_enriched.csv"
-    };
+  window.__AGENCY_PREFIX__ = prefix; // optional, handy for debugging
 
-    // Update download links
-    var csvA  = document.getElementById('dlCsv');
-    var jsonA = document.getElementById('dlJson');
-    if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
-    if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
-  })();
+  window.APP_DATA_URLS = {
+    AWARDS:           base + prefix + "_awards_last_90d.csv",
+    TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
+    TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
+  };
+
+  // Wire download links if present
+  var csvA  = document.getElementById('dlCsv');
+  var jsonA = document.getElementById('dlJson');
+  if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
+  if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
+})();
 </script>
 
-<!-- ========= App code (reads window.APP_DATA_URLS) ========= -->
-<script src="{{ '/assets/js/app.js' | relative_url }}"></script>
+<!-- App code (reads window.APP_DATA_URLS) -->
+<script src="{{ '/assets/js/app.js' | relative_url }}?v=3"></script>
