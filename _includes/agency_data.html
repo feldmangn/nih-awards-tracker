@@ -111,18 +111,16 @@ agency_prefix: epa
   (function () {
     var prefix = "{{ include.prefix | strip | default: 'nih' }}";
     var base   = "{{ '/data/' | relative_url }}";
-
-    // Overwrite APP_DATA_URLS every time this include runs (important for PJAX)
     window.APP_DATA_URLS = {
       AWARDS:           base + prefix + "_awards_last_90d.csv",
       TOP_RECIP:        base + prefix + "_top_recipients_last_90d.csv",
       TOP_RECIP_ENRICH: base + prefix + "_top_recipients_last_90d_enriched.csv"
     };
-
-    // Point download buttons to this agency’s files
     var csvA  = document.getElementById('dlCsv');
     var jsonA = document.getElementById('dlJson');
     if (csvA)  csvA.href  = window.APP_DATA_URLS.AWARDS;
     if (jsonA) jsonA.href = base + prefix + "_awards_last_90d.json";
   })();
 </script>
+
+<script src="{{ '/assets/js/app.js' | relative_url }}" data-no-instant defer></script>
