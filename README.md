@@ -1,4 +1,4 @@
 # NIH Awards Tracker
 
 [![GitHub Pages](https://img.shields.io/badge/View%20Dashboard-Live%20Site-brightgreen?logo=github)](https://feldmangn.github.io/nih-awards-tracker/)
-![Last Updated](https://img.shields.io/badge/last%20update-2026--02--11--07:11--UTC)
+![Last Updated](https://img.shields.io/badge/last%20update-2026--02--12--07:05--UTC)
